@@ -1,0 +1,51 @@
+{
+  "name": "example-team-tools",
+  "owner": {
+    "name": "Example Team",
+    "email": "tools@example.com",
+    "url": "https://example.com/team"
+  },
+  "description": "Example marketplace. Every plugin is declared from an upstream source that a fetch can update; nothing here points at a copy on this machine.",
+  "plugins": [
+    {
+      "name": "example-formatter",
+      "source": {
+        "source": "github",
+        "repo": "example-org/example-formatter-plugin"
+      },
+      "description": "Tracks the repository's default branch. Updates arrive on the next marketplace refresh, because the source is the repository itself rather than a snapshot of it.",
+      "author": {
+        "name": "Example Team"
+      },
+      "license": "MIT",
+      "category": "formatting"
+    },
+    {
+      "name": "example-deploy-tools",
+      "source": {
+        "source": "github",
+        "repo": "example-org/example-deploy-plugin",
+        "ref": "v2.0.0"
+      },
+      "description": "Pinned to a released tag. Still an upstream source: the pin is a deliberate, recorded version you can move by editing one line, not a copy that has quietly stopped tracking anything.",
+      "author": {
+        "name": "Example Team"
+      },
+      "license": "Apache-2.0",
+      "category": "deployment"
+    },
+    {
+      "name": "example-review-helper",
+      "source": {
+        "source": "url",
+        "url": "https://gitlab.example.com/example-team/example-review-plugin.git",
+        "ref": "main"
+      },
+      "description": "Same rule on a non-GitHub host: a git URL is fetchable, so it updates. Use this form for GitLab, Bitbucket, Azure DevOps, or a self-hosted server.",
+      "author": {
+        "name": "Example Team"
+      },
+      "category": "review"
+    }
+  ]
+}

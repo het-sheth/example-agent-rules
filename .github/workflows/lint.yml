@@ -1,0 +1,137 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble AGENTS.md
+        run: bash assemble.sh
+
+      # AGENTS.md is injected into every session of every agent, so its length is a tax paid
+      # on every task. The budget is the forcing function for the pointer pattern: past this,
+      # detail belongs in docs/ behind a pointer line (see docs/layered-rules.md).
+      - name: Enforce AGENTS.md size budget
+        run: |
+          max=100
+          # `wc -l` counts newlines, not lines: a file whose last line has no trailing newline
+          # undercounts by one. awk's END{NR} counts records regardless of a final newline.
+          lines=$(awk 'END{print NR}' AGENTS.md)
+          echo "AGENTS.md is $lines lines (budget: under $max)"
+          if [ "$lines" -ge "$max" ]; then
+            echo "::error::AGENTS.md is $lines lines, budget is under $max — move detail into docs/ behind a pointer"
+            exit 1
+          fi
+
+      # A pointer to a file that does not exist is worse than no pointer: the agent burns a
+      # tool call and then has to guess. Enumerate pointer targets from the actual pointer-line
+      # files (_global.md, claude-extras.md, docs/*.md — see docs/layered-rules.md) rather than
+      # a hardcoded list, so a new pointer is covered automatically. README.md is deliberately
+      # excluded: its one docs/*.md mention is a cross-repo reference ("in that repo"), not a
+      # bootstrap pointer into this repo.
+      - name: Check pointer targets exist
+        run: |
+          fail=0
+          targets=$(grep -rohE 'docs/[A-Za-z0-9_-]+\.md' \
+            _global.md claude-extras.md docs/*.md 2>/dev/null | sort -u)
+          if [ -z "$targets" ]; then
+            echo "::error::no pointer targets found — the enumeration regex is probably broken"
+            exit 1
+          fi
+          for f in $targets; do
+            [ -f "$f" ] && continue
+            # A target that is gitignored by design (e.g. docs/workspace.md, seeded per-machine
+            # from docs/workspace.example.md) is expected to be absent on a fresh clone and in CI.
+            git check-ignore -q "$f" && continue
+            echo "::error::missing pointer target: $f"
+            fail=1
+          done
+          exit $fail
+
+      - name: Guard against committed secrets
+        run: |
+          # Content guard: match an actual PEM header, not the bare words "PRIVATE KEY" —
+          # docs legitimately describe this guard. Exclude only this file, which contains the
+          # pattern as its own regex.
+          if git ls-files -z -- . ':(exclude).github/workflows/lint.yml' \
+             | xargs -0 grep -lIE "BEGIN [A-Z0-9 ]*PRIVATE KEY" 2>/dev/null; then
+            echo "::error::found a PEM private key in a tracked file"
+            exit 1
+          fi
+          # Filename guard: binary keystores (.p12/.pfx/.jks) are DER-encoded — no BEGIN
+          # header, and skipped by grep -I — so this is the only guard that catches them.
+          # Also covers common credential-bundle filenames that carry no recognizable header
+          # (JSON service-account keys, YAML secrets, shell env files, bare API tokens).
+          if git ls-files | grep -E \
+            '(^|/)\.env($|\.)|\.(key|pem|p12|pfx|jks|keystore)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|(^|/)deploy_key$|(^|/)credentials$|(^|/)\.npmrc$|(^|/)\.netrc$|(^|/)credentials\.json$|(^|/)secrets?\.(json|ya?ml)$|(^|/)service[_-]account.*\.json$|(^|/)\.envrc$|(^|/)token(s)?\.(txt|json)$'; then
+            echo "::error::tracked file matches a secret filename pattern"
+            exit 1
+          fi
+          # Personal-data guard: _machine.md and docs/workspace.md hold hostnames, usernames,
+          # and workspace identifiers. They are gitignored; this catches a forced add.
+          if git ls-files | grep -E '^(_machine\.md|docs/workspace\.md)$'; then
+            echo "::error::per-machine file is tracked — it must stay gitignored"
+            exit 1
+          fi
+
+      - name: Shell syntax check
+        run: |
+          fail=0
+          for f in assemble.sh install.sh lib/*.sh; do
+            bash -n "$f" || { echo "::error::syntax error in $f"; fail=1; }
+          done
+          exit $fail
+
+      # The installer's core promise is that --dry-run touches nothing. Verify it against a
+      # throwaway HOME, then confirm the repo itself is unmodified (no _machine.md seeded).
+      - name: install.sh --dry-run changes nothing
+        run: |
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
+          # Snapshot paths AND content hashes: a dry-run that rewrote a file in place (same
+          # path, new bytes) would pass a paths-only comparison.
+          snapshot_home() { { find "$HOME" | sort; find "$HOME" -type f -exec sha256sum {} + | sort; }; }
+          before_home="$(snapshot_home)"
+          # A mutation the dry-run makes to the repo checkout itself (not just $HOME) would
+          # pass the HOME-only snapshot above and still violate "changes nothing, anywhere".
+          # git status catches path-level changes; git diff catches tracked-content changes.
+          before_repo="$(git status --porcelain=v1; git diff | sha256sum)"
+          ./install.sh --dry-run
+          after_home="$(snapshot_home)"
+          after_repo="$(git status --porcelain=v1; git diff | sha256sum)"
+          if [ "$before_home" != "$after_home" ]; then
+            echo "::error::--dry-run modified the temporary HOME"
+            diff <(printf '%s\n' "$before_home") <(printf '%s\n' "$after_home") || true
+            exit 1
+          fi
+          if [ "$before_repo" != "$after_repo" ]; then
+            echo "::error::--dry-run modified the repository checkout"
+            diff <(printf '%s\n' "$before_repo") <(printf '%s\n' "$after_repo") || true
+            exit 1
+          fi
+          if [ -f _machine.md ]; then
+            echo "::error::--dry-run seeded _machine.md in the repo"
+            exit 1
+          fi
+
+      # Per-repo scope of the sanitization gate that runs before the first push to a public
+      # remote: this repo and example-second-brain are documented, reviewed carve-outs for the
+      # literal forge identity in-tree (README cross-links, publish notes). Nothing else here
+      # should ever carry a real machine path — this check is what makes that a CI fact instead
+      # of a claim in docs/provenance.md.
+      - name: Clean-room check (no local machine paths)
+        run: |
+          if git ls-files -z -- . ':(exclude).github/workflows/lint.yml' \
+             | xargs -0 grep -lIE '/(Users|home)/[A-Za-z0-9_.-]+' 2>/dev/null; then
+            echo "::error::tracked file contains a local machine home-directory path — this repo is a clean-room template, not a personal config"
+            exit 1
+          fi
+
+      - name: Markdown lint (non-blocking)
+        continue-on-error: true
+        run: npx --yes markdownlint-cli2 "**/*.md"
