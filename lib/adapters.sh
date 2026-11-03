@@ -111,13 +111,83 @@ check_gemini_adapter() {
 skills_dest_for() {
   case "$1" in
     claude) echo "$HOME/.claude/skills" ;;
-    codex)  echo "$HOME/.codex/skills"  ;;
+    codex)  echo "$HOME/.agents/skills"  ;;
     *) return 1 ;;
   esac
 }
 
+# Read ownership without accepting a similarly prefixed path or another record kind.
+_codex_skill_record() {
+  [ -f "$MANIFEST" ] || return 0
+  awk -F '\t' -v p="$1" '$1 == p || $2 == p { print }' "$MANIFEST"
+}
+
+_codex_legacy_owned() {
+  local repo="$1" name="$2" path="$3" record target resolved root
+  [ -L "$path" ] || return 1
+  record="$(_codex_skill_record "$path")"
+  [ -n "$record" ] || return 1
+  _manifest_parse "$record"
+  [ "$_mf_kind" = link ] || return 1
+  target="$(readlink "$path")"
+  if [ "$_mf_digest" != '-' ]; then
+    [ "$target" = "$_mf_digest" ] && [ "$target" = "$repo/skills/$name" ]
+    return
+  fi
+  # Bare records need a live physical target in this rulebook, not a textual prefix.
+  [ "$record" = "$path" ] || return 1
+  case "$target" in /*) ;; *) target="$(dirname "$path")/$target" ;; esac
+  resolved="$(cd -P "$target" 2>/dev/null && pwd)" || return 1
+  root="$(cd -P "$repo/skills" && pwd)" || return 1
+  case "$resolved" in "$root"/*) return 0 ;; *) return 1 ;; esac
+}
+
+_codex_forget_legacy() {
+  local repo="$1" name="$2" path="$3"
+  _codex_legacy_owned "$repo" "$name" "$path" || return 1
+  # Upgrade proven bare ownership so generic cleanup also handles relative link targets.
+  _manifest_record link "$path" "$(readlink "$path")" || return 1
+  manifest_forget "$path"
+}
+
+# Deploy first, save reversal evidence, then forget only the still-owned legacy link.
+migrate_codex_skill() {
+  local repo="$1" name="$2" old="$HOME/.codex/skills/$2" new="$HOME/.agents/skills/$2"
+  local target="$repo/skills/$name" record state old_target backup_path=''
+  local migration_root="${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules/migrations/codex-skills"
+  if ! _codex_legacy_owned "$repo" "$name" "$old"; then
+    managed_link "$target" "$new"
+    return
+  fi
+  old_target="$(readlink "$old")"
+  state=missing
+  if [ -L "$new" ] && [ "$(readlink "$new")" = "$target" ]; then state=same
+  elif [ -e "$new" ] || [ -L "$new" ]; then state=backup; fi
+  mkdir -p "$migration_root" || return 1
+  record="$(mktemp -d "$migration_root/record.XXXXXX")" || return 1
+  local BACKUP="$BACKUP/codex-skills-$(basename "$record")"
+  printf '%s\n' codex-skills-v1 "$repo" "$old" "$new" "$old_target" "$target" "$state" \
+    | atomic_write "$record/paths" || return 1
+  _codex_skill_record "$old" | atomic_write "$record/old-record" || return 1
+  _codex_skill_record "$new" | atomic_write "$record/new-record" || return 1
+  managed_link "$target" "$new" || return 1
+  if [ "$state" = backup ]; then
+    for backup_path in "$BACKUP"/*; do
+      [ -e "$backup_path" ] || [ -L "$backup_path" ] || return 1
+      break
+    done
+  fi
+  printf '%s\n' "$backup_path" | atomic_write "$record/backup-path" || return 1
+  printf '%s\n' deployed | atomic_write "$record/deployed" || return 1
+  # Recheck after deployment: a retargeted legacy link is never ours to remove.
+  _codex_legacy_owned "$repo" "$name" "$old" || return 1
+  _codex_forget_legacy "$repo" "$name" "$old" || return 1
+  printf '%s\n' complete | atomic_write "$record/complete" || return 1
+  log "Codex skill migrated; reversal record: $record"
+}
+
 install_skills() {
-  local repo="$1" agent dest d found=false
+  local repo="$1" agent dest d found=false bad=0
   if ! sync_enabled skills; then
     # A profile switch (personal -> work) must not leave previously-synced links behind, or
     # `check` keeps reporting skills as installed while the matrix says this profile has none.
@@ -126,7 +196,11 @@ install_skills() {
         dest="$(skills_dest_for "$agent")"
         for d in "$repo"/skills/*/; do
           [ -d "$d" ] || continue
+          ${DRY:-false} && continue
           manifest_forget "$dest/$(basename "$d")"
+          if [ "$agent" = codex ] && _codex_legacy_owned "$repo" "$(basename "$d")" "$HOME/.codex/skills/$(basename "$d")"; then
+            _codex_forget_legacy "$repo" "$(basename "$d")" "$HOME/.codex/skills/$(basename "$d")"
+          fi
         done
       done
     fi
@@ -147,13 +221,18 @@ install_skills() {
     for d in "$repo"/skills/*/; do
       [ -d "$d" ] || continue
       found=true
-      managed_link "${d%/}" "$dest/$(basename "$d")" || true   # fail-closed warns; keep going
+      if [ "$agent" = codex ]; then
+        migrate_codex_skill "$repo" "$(basename "$d")" || bad=1
+      else
+        managed_link "${d%/}" "$dest/$(basename "$d")" || bad=1
+      fi
     done
   done
   if ! $found && ! ${DRY:-false}; then
     log "Skills: none to install (skills/ is empty)"
   fi
   ${DRY:-false} || manifest_prune_dangling
+  return "$bad"
 }
 
 check_skills() {

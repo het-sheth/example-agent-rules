@@ -342,7 +342,8 @@ test_install_preserves_retargeted_dangling_links() {
     return
   fi
   for agent in claude codex external; do
-    dest="$HOME/.$agent/skills/retired"
+    if [ "$agent" = codex ]; then dest="$(skills_dest_for codex)/retired"
+    else dest="$HOME/.$agent/skills/retired"; fi
     if [ "$agent" = external ]; then
       managed_link "$HOME/cache/retired" "$dest" >/dev/null
     fi
@@ -359,7 +360,8 @@ test_install_preserves_retargeted_dangling_links() {
     return
   fi
   for agent in claude codex external; do
-    dest="$HOME/.$agent/skills/retired"
+    if [ "$agent" = codex ]; then dest="$(skills_dest_for codex)/retired"
+    else dest="$HOME/.$agent/skills/retired"; fi
     foreign="$HOME/foreign/$agent/missing"
     record="$(grep -F "$dest" "$HOME/before-reinstall")"
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$foreign" ] \
@@ -390,6 +392,8 @@ main() {
   test_prune_bounds_legacy_skill_ownership
   test_prune_preserves_other_manifest_artifacts
   test_install_preserves_retargeted_dangling_links
+  if bash "$REPO/tests/codex-skills-migration.test.sh"; then pass "Codex migration suite"
+  else fail "Codex migration suite"; fi
 
   echo "----------------------------------------"
   echo "$PASS passed, $FAIL failed"
