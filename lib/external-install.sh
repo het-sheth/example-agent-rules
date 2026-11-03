@@ -85,6 +85,7 @@ install_external_skills_all() {
 check_external_skills_all() {
   local repo="$1" cache="$2" state="${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules"
   local desired installed='' sorted_desired sorted_installed file path target line i bad=0
+  local agent root name candidate roots=()
   local _ed_agents=() _ed_names=() _ed_paths=() _ed_targets=()
   _external_skills_recovery "$state" || bad=1
   desired="$(external_skills_plan "$repo" "$cache")" || {
@@ -129,12 +130,25 @@ check_external_skills_all() {
       bad=1
     done
   fi
-  if [ -n "$cache" ] && [ -f "$MANIFEST" ]; then
+  if [ -f "$MANIFEST" ]; then
+    for agent in claude codex; do
+      root="$(skills_dest_for "$agent")" || { echo 'FAIL: cannot resolve skill destinations'; return 1; }
+      roots+=("$root")
+    done
     while IFS= read -r line || [ -n "$line" ]; do
       _manifest_parse "$line"
-      [ "$_mf_kind" = link ] || continue
-      case "$_mf_digest" in "$cache"/*) ;; *) continue ;; esac
-      path="$_mf_path"; target="$_mf_digest"
+      [ "$line" = "link"$'\t'"$_mf_path"$'\t'"$_mf_digest" ] || continue
+      path="$_mf_path"; target="$_mf_digest"; name="${path##*/}"
+      candidate=false
+      if [ -n "$cache" ]; then
+        case "$target" in "$cache"/*) candidate=true ;; esac
+      fi
+      for root in "${roots[@]}"; do
+        if [ "$path" = "$root/$name" ] && [ "$target" != "$repo/skills/$name" ]; then
+          candidate=true
+        fi
+      done
+      $candidate || continue
       if ! awk -F '\t' -v p="$path" -v t="$target" \
         '$3 == p && $4 == t { found=1 } END { exit !found }' <<< "$installed"; then
         echo "FAIL: external manifest link lacks installed selection: $path"

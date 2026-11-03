@@ -296,4 +296,29 @@ for unused in xdg-space override-space override-relative; do
   require grep -Fq 'external cache must be an absolute path without whitespace' "$CASE/output"
 done
 ok 'disabled install, check and dry-run ignore unused invalid caches while enabled caches remain restricted'
+for location in default canonical-alias; do
+  fresh "orphan-$location"
+  select_source "$FIRST"
+  if [ "$location" = canonical-alias ]; then
+    mkdir "$CASE/physical-cache"
+    ln -s "$CASE/physical-cache" "$CASE/cache-alias"
+    export AGENT_RULES_SKILL_CACHE="$CASE/cache-alias"
+  fi
+  require run
+  if [ "$location" = canonical-alias ]; then export AGENT_RULES_SKILL_CACHE=relative; fi
+  printf 'malformed catalog\n' > "$BOOK/skills/external.list"
+  : > "$INSTALLED"
+  TEST_PROFILE=work readonly_run fail check
+  require grep -Fq 'external manifest link lacks installed selection' "$CASE/output"
+  rm "$INSTALLED"
+  TEST_PROFILE=work readonly_run fail check
+  require grep -Fq 'external manifest link lacks installed selection' "$CASE/output"
+done
+ok 'disabled check detects retained typed external links with empty or missing selection state independently of cache aliases or changed settings'
+fresh local-control
+mkdir "$BOOK/skills/local"
+printf 'local skill\n' > "$BOOK/skills/local/SKILL.md"
+require run
+TEST_PROFILE=work readonly_run pass check
+ok 'disabled orphan scan preserves existing handling of exact local skill targets, rule links and tracked copies'
 printf '%s integration assertions passed\n' "$PASS"
