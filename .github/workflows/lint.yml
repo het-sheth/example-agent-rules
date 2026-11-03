@@ -87,14 +87,21 @@ jobs:
           done
           exit $fail
 
-      - name: Diagnose synthetic fallback locking
+      - name: Diagnose fallback syscalls in full suite
         run: |
-          bash --version
+          for utility in bash mkdir rmdir; do
+            utility_path=$(command -v "$utility")
+            printf 'Utility: %s path=%s resolved=' "$utility" "$utility_path"
+            readlink -f "$utility_path"
+            "$utility" --version
+          done
+          command -v strace
+          strace --version
           trace_dir=$(mktemp -d)
           status=0
-          FALLBACK_LOCK_TRACE_DIR="$trace_dir" bash tests/fallback-lock.test.sh || status=$?
-          for trace in "$trace_dir"/*.trace; do
-            printf '\nTrace: %s\n' "$trace"
+          FALLBACK_LOCK_SYSCALL_DIR="$trace_dir" bash tests/run.sh || status=$?
+          for trace in "$trace_dir"/fallback.*; do
+            printf '\nSyscall trace: %s\n' "$trace"
             cat "$trace"
           done
           exit "$status"
