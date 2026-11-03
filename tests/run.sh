@@ -414,6 +414,9 @@ main() {
   if bash "$REPO/tests/codex-skills-migration.test.sh"; then pass "Codex migration suite"
   else fail "Codex migration suite"; fi
 
+  if bash "$REPO/tests/external-sources.test.sh"; then pass "External source suite"
+  else fail "External source suite"; fi
+
   echo "----------------------------------------"
   echo "$PASS passed, $FAIL failed"
   [ "$FAIL" -eq 0 ]
