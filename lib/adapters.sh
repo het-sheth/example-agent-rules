@@ -111,25 +111,234 @@ check_gemini_adapter() {
 skills_dest_for() {
   case "$1" in
     claude) echo "$HOME/.claude/skills" ;;
-    codex)  echo "$HOME/.codex/skills"  ;;
+    codex)  echo "$HOME/.agents/skills"  ;;
     *) return 1 ;;
   esac
 }
 
+# Read ownership without accepting a similarly prefixed path or another record kind.
+_codex_skill_record() {
+  [ -f "$MANIFEST" ] || return 0
+  awk -F '\t' -v p="$1" '$1 == p || $2 == p { print }' "$MANIFEST"
+}
+
+_codex_skill_owned() {
+  local repo="$1" name="$2" path="$3" record target resolved root parent
+  [ -L "$path" ] || return 1
+  record="$(_codex_skill_record "$path")"
+  [ -n "$record" ] || return 1
+  _manifest_parse "$record"
+  [ "$_mf_kind" = link ] || return 1
+  target="$(readlink "$path")"
+  if [ "$_mf_digest" != '-' ]; then
+    [ "$target" = "$_mf_digest" ] || return 1
+    [ "$target" = "$repo/skills/$name" ] && return 0
+  else
+    [ "$record" = "$path" ] || return 1
+  fi
+  case "$target" in /*) ;; *) target="$(dirname "$path")/$target" ;; esac
+  root="$(cd -P "$repo/skills" && pwd)" || return 1
+  if resolved="$(cd -P "$target" 2>/dev/null && pwd)"; then
+    case "$resolved" in "$root"/*) return 0 ;; *) return 1 ;; esac
+  fi
+  [ ! -e "$target" ] && [ ! -L "$target" ] || return 1
+  parent="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)" || return 1
+  case "$parent" in "$root"|"$root"/*) return 0 ;; *) return 1 ;; esac
+}
+
+# Upgrade proven ownership so generic cleanup also handles relative legacy targets.
+_codex_forget_owned() {
+  local repo="$1" name="$2" path="$3"
+  _codex_skill_owned "$repo" "$name" "$path" || return 1
+  _manifest_record link "$path" "$(readlink "$path")" || return 1
+  manifest_forget "$path"
+}
+
+# Deploy first, save reversal evidence, then forget only the still-owned legacy link.
+migrate_codex_skill() {
+  local repo="$1" name="$2" old="$HOME/.codex/skills/$2" new="$HOME/.agents/skills/$2"
+  local target="$repo/skills/$name" record state old_target backup_path=''
+  local migration_root="${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules/migrations/codex-skills"
+  if ! _codex_skill_owned "$repo" "$name" "$old"; then
+    managed_link "$target" "$new"
+    return
+  fi
+  old_target="$(readlink "$old")"
+  state=missing
+  if [ -L "$new" ] && [ "$(readlink "$new")" = "$target" ]; then state=same
+  elif [ -e "$new" ] || [ -L "$new" ]; then state=backup; fi
+  mkdir -p "$migration_root" || return 1
+  record="$(mktemp -d "$migration_root/record.XXXXXX")" || return 1
+  local BACKUP="$BACKUP/codex-skills-$(basename "$record")"
+  printf '%s\n' codex-skills-v1 "$repo" "$old" "$new" "$old_target" "$target" "$state" \
+    | atomic_write "$record/paths" || return 1
+  _codex_skill_record "$old" | atomic_write "$record/old-record" || return 1
+  _codex_skill_record "$new" | atomic_write "$record/new-record" || return 1
+  managed_link "$target" "$new" || return 1
+  if [ "$state" = backup ]; then
+    for backup_path in "$BACKUP"/*; do
+      [ -e "$backup_path" ] || [ -L "$backup_path" ] || return 1
+      break
+    done
+  fi
+  printf '%s\n' "$backup_path" | atomic_write "$record/backup-path" || return 1
+  printf '%s\n' deployed | atomic_write "$record/deployed" || return 1
+  [ "$(readlink "$old")" = "$old_target" ] || return 1
+  _codex_skill_owned "$repo" "$name" "$old" || return 1
+  _codex_forget_owned "$repo" "$name" "$old" || return 1
+  printf '%s\n' complete | atomic_write "$record/complete" || return 1
+  log "Codex skill migrated; reversal record: $record"
+}
+
+# Reversal accepts installer data, never shell input, and preflights every live destination.
+rollback_codex_skills() {
+  local repo="$1" record="$2" root version saved_repo old new old_target target state extra
+  local backup_path old_record new_record current tmp name file created_old=false old_current
+  root="${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules/migrations/codex-skills"
+  [ -d "$record" ] && [ ! -L "$record" ] && [ ! -e "$record/reverted" ] \
+    || { warn 'not an active Codex skill migration record'; return 1; }
+  [ "$(cd -P "$(dirname "$record")" && pwd)" = "$(cd -P "$root" && pwd)" ] \
+    || { warn 'migration record is outside this machine state'; return 1; }
+  for file in paths old-record new-record backup-path deployed; do
+    [ -f "$record/$file" ] && [ ! -L "$record/$file" ] \
+      || { warn "incomplete migration evidence: $file"; return 1; }
+  done
+  {
+    IFS= read -r version && IFS= read -r saved_repo && IFS= read -r old \
+      && IFS= read -r new && IFS= read -r old_target && IFS= read -r target \
+      && IFS= read -r state && ! IFS= read -r extra
+  } < "$record/paths" || { warn 'invalid migration paths'; return 1; }
+  [ "$(cat "$record/deployed")" = deployed ] || return 1
+  if [ -e "$record/complete" ] || [ -L "$record/complete" ]; then
+    [ ! -L "$record/complete" ] && [ "$(cat "$record/complete")" = complete ] || return 1
+  fi
+  name="${old##*/}"
+  case "$name" in ''|.|..) warn 'invalid migration skill name'; return 1 ;; esac
+  [ "$version" = codex-skills-v1 ] && [ "$saved_repo" = "$repo" ] \
+    && [ "$old" = "$HOME/.codex/skills/$name" ] \
+    && [ "$new" = "$HOME/.agents/skills/$name" ] && [ "$target" = "$repo/skills/$name" ] \
+    || { warn 'migration does not match this checkout and HOME'; return 1; }
+  old_record="$(cat "$record/old-record")"
+  new_record="$(cat "$record/new-record")"
+  case "$old_record$new_record" in *$'\n'*) warn 'invalid prior manifest records'; return 1 ;; esac
+  _manifest_parse "$old_record"
+  [ "$_mf_kind" = link ] && [ "$_mf_path" = "$old" ] \
+    && { [ "$old_record" = "$old" ] || [ "$_mf_digest" = "$old_target" ]; } \
+    || { warn 'invalid legacy ownership evidence'; return 1; }
+  if [ -n "$new_record" ]; then
+    _manifest_parse "$new_record"
+    [ "$_mf_path" = "$new" ] && { [ "$_mf_kind" = link ] || [ "$_mf_kind" = copy ]; } \
+      || { warn 'invalid destination ownership evidence'; return 1; }
+  fi
+  old_current="$(_codex_skill_record "$old")"
+  if [ ! -e "$old" ] && [ ! -L "$old" ] && [ -z "$old_current" ]; then
+    created_old=true
+  elif [ ! -e "$record/complete" ] && [ -L "$old" ] \
+       && [ "$(readlink "$old")" = "$old_target" ] \
+       && { [ "$old_current" = "$old_record" ] \
+            || [ "$old_current" = "$(printf 'link\t%s\t%s' "$old" "$old_target")" ]; }; then
+    created_old=false
+  else
+    warn 'legacy destination changed; refusing reversal'; return 1
+  fi
+  [ -L "$new" ] && [ "$(readlink "$new")" = "$target" ] \
+    || { warn 'destination changed; refusing reversal'; return 1; }
+  current="$(printf 'link\t%s\t%s' "$new" "$target")"
+  [ "$(_codex_skill_record "$new")" = "$current" ] \
+    || { warn 'destination ownership changed; refusing reversal'; return 1; }
+  backup_path="$(cat "$record/backup-path")"
+  case "$state" in
+    missing|same) [ -z "$backup_path" ] || return 1 ;;
+    backup)
+      case "$backup_path" in
+        "$BACKUP/codex-skills-$(basename "$record")/$name.pre-install."*) ;;
+        *) warn 'unexpected migration backup path'; return 1 ;;
+      esac
+      [ "$(dirname "$backup_path")" = "$BACKUP/codex-skills-$(basename "$record")" ] \
+        && [ ! -L "$(dirname "$backup_path")" ] \
+        && { [ -e "$backup_path" ] || [ -L "$backup_path" ]; } \
+        || { warn 'migration backup missing or changed; refusing reversal'; return 1; }
+      ;;
+    *) warn 'invalid prior destination state'; return 1 ;;
+  esac
+  tmp="$(mktemp "$(dirname "$MANIFEST")/.links.XXXXXX")" || return 1
+  if ! awk -F '\t' -v a="$old" -v b="$new" \
+      '$1 != a && $2 != a && $1 != b && $2 != b' "$MANIFEST" > "$tmp" \
+      || ! cat "$record/old-record" "$record/new-record" >> "$tmp"; then
+    rm -f "$tmp"; warn 'cannot stage restored manifest'; return 1
+  fi
+  if $created_old && ! ln -s "$old_target" "$old"; then rm -f "$tmp"; return 1; fi
+  if [ "$state" != same ]; then
+    if ! rm "$new"; then
+      $created_old && rm -f "$old"
+      rm -f "$tmp"; return 1
+    fi
+    if [ "$state" = backup ] && ! mv "$backup_path" "$new"; then
+      ln -s "$target" "$new"
+      $created_old && rm -f "$old"
+      rm -f "$tmp"
+      warn 'backup restoration failed; migration retained'; return 1
+    fi
+  fi
+  if ! mv -f "$tmp" "$MANIFEST"; then
+    local recovered=true
+    if [ "$state" = backup ]; then
+      if [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ]; then
+        mv "$new" "$backup_path" || recovered=false
+      else recovered=false; fi
+    fi
+    if [ "$state" != same ] && $recovered; then
+      ln -s "$target" "$new" || recovered=false
+    fi
+    if $created_old && $recovered; then
+      if [ -L "$old" ] && [ "$(readlink "$old")" = "$old_target" ]; then
+        rm "$old" || recovered=false
+      else recovered=false; fi
+    fi
+    rm -f "$tmp"
+    if $recovered; then warn 'manifest restoration failed; forward deployment retained, retry reversal'
+    else warn "manifest restoration and compensation failed; recovery evidence: $record"; fi
+    return 1
+  fi
+  printf '%s\n' reverted | atomic_write "$record/reverted" || return 1
+  log "Codex skill migration reversed: $record"
+}
+
+_codex_remove_disabled_skills() {
+  local repo="$1" line path name
+  [ -f "$MANIFEST" ] || return 0
+  while IFS= read -r line; do
+    _manifest_parse "$line"
+    path="$_mf_path"
+    case "$path" in
+      "$HOME/.codex/skills/"*|"$HOME/.agents/skills/"*) ;;
+      *) continue ;;
+    esac
+    name="${path##*/}"
+    [ "$path" = "$HOME/.codex/skills/$name" ] \
+      || [ "$path" = "$HOME/.agents/skills/$name" ] || continue
+    if _codex_skill_owned "$repo" "$name" "$path"; then
+      _codex_forget_owned "$repo" "$name" "$path" || return 1
+    fi
+  done < "$MANIFEST"
+}
+
 install_skills() {
-  local repo="$1" agent dest d found=false
+  local repo="$1" agent dest d found=false bad=0
   if ! sync_enabled skills; then
     # A profile switch (personal -> work) must not leave previously-synced links behind, or
     # `check` keeps reporting skills as installed while the matrix says this profile has none.
     if [ -d "$repo/skills" ]; then
-      for agent in claude codex; do
+      for agent in claude; do
         dest="$(skills_dest_for "$agent")"
         for d in "$repo"/skills/*/; do
           [ -d "$d" ] || continue
+          ${DRY:-false} && continue
           manifest_forget "$dest/$(basename "$d")"
         done
       done
     fi
+    ${DRY:-false} || _codex_remove_disabled_skills "$repo" || return 1
     log "Skills: skipped (profile=${PROFILE:-work})"
     return 0
   fi
@@ -147,13 +356,18 @@ install_skills() {
     for d in "$repo"/skills/*/; do
       [ -d "$d" ] || continue
       found=true
-      managed_link "${d%/}" "$dest/$(basename "$d")" || true   # fail-closed warns; keep going
+      if [ "$agent" = codex ]; then
+        migrate_codex_skill "$repo" "$(basename "$d")" || bad=1
+      else
+        managed_link "${d%/}" "$dest/$(basename "$d")" || bad=1
+      fi
     done
   done
   if ! $found && ! ${DRY:-false}; then
     log "Skills: none to install (skills/ is empty)"
   fi
   ${DRY:-false} || manifest_prune_dangling
+  return "$bad"
 }
 
 check_skills() {

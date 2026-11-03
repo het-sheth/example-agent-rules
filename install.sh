@@ -117,7 +117,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "$MODE" in
     check)      do_check ;;
     --dry-run)  do_install ;;
+    rollback-codex-skills)
+      [ "$#" -eq 2 ] || die 'usage: install.sh rollback-codex-skills RECORD'
+      mkdir -p "$(dirname "$LOCK")"
+      with_lock "$LOCK" rollback_codex_skills "$REPO" "$2"
+      ;;
     install)    mkdir -p "$(dirname "$LOCK")"; with_lock "$LOCK" do_install ;;
-    *) echo "usage: install.sh [--dry-run|check]" >&2; exit 2 ;;
+    *) echo "usage: install.sh [--dry-run|check|rollback-codex-skills RECORD]" >&2; exit 2 ;;
   esac
 fi

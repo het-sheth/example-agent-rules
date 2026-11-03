@@ -87,6 +87,18 @@ Each agent is wired through the surface it actually documents:
 - **Codex** — `~/.codex/AGENTS.md` is symlinked to the generated `AGENTS.md`.
 - **Gemini** — `~/.gemini/GEMINI.md` is symlinked to the same file.
 
+Codex skills are linked into `~/.agents/skills`; Claude skills remain in `~/.claude/skills`.
+On a personal-profile install, owned legacy `~/.codex/skills` links move only after the new
+link deploys successfully. Foreign links and regular files in the legacy location survive.
+Migration evidence under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules/migrations/codex-skills/`
+records the prior manifest entries, both targets and any collision backup before legacy cleanup.
+To reverse one completed migration, use the exact record directory printed by install:
+`./install.sh rollback-codex-skills RECORD`. Run from the same checkout, HOME, state and backup
+configuration. This restores the old link, prior manifest records and any displaced destination.
+Reversal refuses changed destinations or ownership and missing backups. A subsequent install
+migrates forward again. Fresh installations have no migration record. A work profile removes
+still-owned links in both Codex locations. Check requires the new location; dry-run never migrates or writes evidence.
+
 An agent that is not installed gets nothing and is reported as absent. An agent with no
 documented surface for a feature has that gap recorded in `capabilities/matrix.tsv` rather than
 worked around by guessing at a config format.
