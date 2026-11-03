@@ -87,6 +87,9 @@ jobs:
           done
           exit $fail
 
+      - name: Run installer behavioral tests
+        run: bash tests/run.sh
+
       # The installer's core promise is that --dry-run touches nothing. Verify it against a
       # throwaway HOME, then confirm the repo itself is unmodified (no _machine.md seeded).
       - name: install.sh --dry-run changes nothing
