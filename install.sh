@@ -13,6 +13,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$REPO/lib/profile.sh"
 . "$REPO/lib/manifest.sh"
 . "$REPO/lib/adapters.sh"
+. "$REPO/lib/external-skills.sh"
+. "$REPO/lib/external-deploy.sh"
+. "$REPO/lib/external-install.sh"
 
 BACKUP="${AGENT_RULES_BACKUP:-$HOME/.agent-rules-backup}"
 PROFILE="${PROFILE:-$(read_profile "$REPO/_machine.md")}"
@@ -94,6 +97,8 @@ do_install() {
   else
     bash "$REPO/assemble.sh"
   fi
+
+  install_external_skills_all "$REPO" "$(external_skill_cache)" || return $?
 
   install_claude_adapter "$REPO"
   install_codex_adapter  "$REPO"

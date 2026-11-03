@@ -420,6 +420,9 @@ main() {
   if bash "$REPO/tests/external-deploy.test.sh"; then pass "External deployment suite"
   else fail "External deployment suite"; fi
 
+  if bash "$REPO/tests/external-skills.test.sh"; then pass "External integration suite"
+  else fail "External integration suite"; fi
+
   echo "----------------------------------------"
   echo "$PASS passed, $FAIL failed"
   [ "$FAIL" -eq 0 ]

@@ -1,7 +1,7 @@
 # Locked external skill sources
 
-The source library validates catalogs and prepares an isolated Git cache. It does not yet
-participate in ordinary install, check or dry-run, and it does not deploy skill links.
+Ordinary installation prepares the complete selected union in an isolated Git cache before
+reconciling all external links in one deployment transaction. Shipped catalogs remain empty.
 Source `lib/common.sh`, `lib/profile.sh`, `lib/adapters.sh`, then `lib/external-skills.sh`.
 
 `external_skills_validate repo` checks catalog structure and locks without fetching or writing.
@@ -41,7 +41,9 @@ or private profile names.
 prints TSV fields `(agent, name, absolute prepared skill directory)` only after every selected
 source succeeds. Excluded sources cause no cache access or fetch, but their syntax and locks
 must still validate. An empty selection creates nothing. The caller supplies the dedicated
-cache path; ordinary installer cache-default and override wiring is deferred.
+cache path. The installer uses `AGENT_RULES_SKILL_CACHE` when set, otherwise
+`${XDG_CACHE_HOME:-$HOME/.cache}/agent-rules/skills`. Cache paths must be absolute and contain
+no whitespace.
 
 Cache entries are SHA-256 keys of the exact URL and locked revision, separated by newlines.
 Equal repository basenames, different URL spellings and different revisions remain separate.
@@ -71,7 +73,7 @@ To advance a lock, review the chosen source commit and selected skill paths, upd
 SHA manually, then validate and prepare it against a test cache. Review the catalog and lock
 diff together. Retain old cache entries for rollback; restoring an old catalog and lock can
 reuse them offline. Source preparation alone does not change any installed skill. Deployment
-uses the separate transaction below; ordinary installer integration remains deferred.
+uses the separate transaction below.
 
 ## External deployment library
 
@@ -82,7 +84,7 @@ absolute target)`. Empty input reconciles to no external skills without parsing 
 catalogs. Nonempty input validates catalog applicability, destination resolvers and existing
 source directories with `SKILL.md`. Names and paths cannot contain whitespace or control bytes.
 Destinations, state, backup locations and prepared sources must not overlap physically.
-No source cache is fetched, edited or removed. Ordinary install/check wiring remains deferred.
+No source cache is fetched, edited or removed by the deployment transaction.
 
 The caller must create the per-machine state directory and hold the install lock throughout
 this call. This library does not acquire a nested lock, infer agent selection or provide a
@@ -114,3 +116,18 @@ retries. Inspect it while holding the install lock, restore the recorded origina
 metadata, and remove the evidence only after verifying recovery. An interrupted live deployment
 also requires that inspection. This provides compensation for reported failures, not atomicity
 across arbitrary process death. Cache entries remain available for later offline rollback.
+
+## Installation orchestration
+
+Source `lib/external-install.sh` after both source and deployment libraries.
+`install_external_skills_all repo cache` prepares selected sources once, builds the complete
+desired set and calls `external_deploy_all` once with a temporary TSV file. Its caller initializes
+`MANIFEST`, `BACKUP` and the state directory and holds the installation lock. It returns the
+deployment status, including 2 for recovery requiring inspection. Globally disabled skills
+bypass catalog parsing and preparation, then reconcile to an empty set. Enabled profiles
+validate every catalog row but only prepare skills selected for detected applicable agents.
+
+Run `./install.sh` to install the exact locked commits. Ordinary installation never advances a
+lock. Remove a catalog row and reinstall to remove its still-owned links. Moving a portable row
+to the Claude-only catalog also removes its owned Codex link. Switching to a disabled profile
+cleans up external selections even when catalogs are malformed. User-retargeted artifacts survive.
