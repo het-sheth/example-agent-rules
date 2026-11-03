@@ -48,6 +48,9 @@ Equal repository basenames, different URL spellings and different revisions rema
 Existing entries must have the exact origin and HEAD, a clean index and working tree, no
 untracked or ignored files, and all selected skill directories and `SKILL.md` files inside the
 entry. Hidden index flags are refused. Invalid final entries fail without reset or deletion.
+Cache-local configuration is restricted to the basic keys written by initialization and the
+origin remote; filters, includes and other customizations are refused before inspecting the
+working tree. Git replacement objects are disabled, and graft metadata is refused.
 Valid entries are reusable offline without fetches. Git hooks, inherited configuration,
 content filters and recursive submodule checkout are disabled during preparation.
 

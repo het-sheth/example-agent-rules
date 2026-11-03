@@ -169,6 +169,37 @@ git -C "$ENTRY_A" checkout -q --detach "$NEW_SHA"
 reject external_skills_prepare "$RULES" "$CACHE"
 [ "$(git -C "$ENTRY_A" rev-parse HEAD)" = "$NEW_SHA" ]
 git -C "$ENTRY_A" checkout -q --detach "$SHA_A"
+git -C "$ENTRY_A" replace "$SHA_A" "$NEW_SHA"
+git -C "$ENTRY_A" checkout -q -f --detach "$SHA_A"
+[ "$(cat "$ALPHA/SKILL.md")" = second ]
+tar --format=ustar -cf "$ROOT/cache-before.tar" -C "$ENTRY_A" .
+reject external_skills_prepare "$RULES" "$CACHE"
+tar --format=ustar -cf "$ROOT/cache-after.tar" -C "$ENTRY_A" .
+cmp "$ROOT/cache-before.tar" "$ROOT/cache-after.tar"
+git -C "$ENTRY_A" replace -d "$SHA_A" >/dev/null
+git -C "$ENTRY_A" checkout -q -f --detach "$SHA_A"
+ok 'replacement-backed cache content is refused without changing its files or Git metadata'
+printf 'first\n' > "$ROOT/locked-content"
+printf '#!/bin/sh\ntouch "%s"\ncat "%s"\n' "$ROOT/local-filter-executed" "$ROOT/locked-content" > "$ROOT/local-clean-filter"
+chmod +x "$ROOT/local-clean-filter"
+for config in direct include; do
+  if [ "$config" = direct ]; then
+    git -C "$ENTRY_A" config filter.fixture.clean "$ROOT/local-clean-filter"
+  else
+    git config --file "$ROOT/included-config" filter.fixture.clean "$ROOT/local-clean-filter"
+    git -C "$ENTRY_A" config include.path "$ROOT/included-config"
+  fi
+  printf 'evil!\n' > "$ALPHA/SKILL.md"
+  tar --format=ustar -cf "$ROOT/cache-before.tar" -C "$ENTRY_A" .
+  reject external_skills_prepare "$RULES" "$CACHE"
+  [ ! -e "$ROOT/local-filter-executed" ]
+  tar --format=ustar -cf "$ROOT/cache-after.tar" -C "$ENTRY_A" .
+  cmp "$ROOT/cache-before.tar" "$ROOT/cache-after.tar"
+  if [ "$config" = direct ]; then git -C "$ENTRY_A" config --unset filter.fixture.clean
+  else git -C "$ENTRY_A" config --unset include.path; fi
+  git -C "$ENTRY_A" checkout -q -f --detach "$SHA_A"
+done
+ok 'cache-local and included filters are refused without executing or changing cache metadata'
 ok 'offline reuse never fetches and invalid final caches remain untouched'
 reset_catalog
 printf '%s %s\n' "$URL_A" "$SHA_A" > "$RULES/skills/external.lock"

@@ -134,7 +134,8 @@ _external_selected_rows() {
 _external_git() (
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
   unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_EXEC_PATH
-  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0
+  unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_NAMESPACE
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1
   git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.fileMode=true -c submodule.recurse=false \
     -c protocol.allow=never -c protocol.https.allow=always -c protocol.file.allow=always \
     -c credential.helper= "$@"
@@ -168,11 +169,26 @@ _external_content_path() {
   printf '%s\n' "$dir"
 }
 
+_external_cache_config_safe() {
+  local entry="$1" keys name
+  [ -f "$entry/.git/config" ] && [ ! -L "$entry/.git/config" ] \
+    || { warn 'external cache config is missing or a symlink'; return 1; }
+  keys="$(_external_git config --file "$entry/.git/config" --no-includes --name-only --list)" || return 1
+  while IFS= read -r name; do
+    case "$name" in
+      core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|core.precomposeunicode|remote.origin.url|remote.origin.fetch) ;;
+      *) warn "unsupported external cache config: $name"; return 1 ;;
+    esac
+  done <<< "$keys"
+}
+
 _external_verify_entry() {
   local entry="$1" url="$2" revision="$3" paths="$4" path top actual origin status flags
   [ -d "$entry" ] && [ ! -L "$entry" ] && [ -d "$entry/.git" ] && [ ! -L "$entry/.git" ] \
     && [ ! -e "$entry/.git/objects/info/alternates" ] \
+    && [ ! -e "$entry/.git/info/grafts" ] && [ ! -L "$entry/.git/info/grafts" ] \
     || { warn "invalid external cache directory: $entry"; return 1; }
+  _external_cache_config_safe "$entry" || return 1
   top="$(_external_git -C "$entry" rev-parse --show-toplevel)" || return 1
   origin="$(_external_git -C "$entry" config --local --no-includes --get-all remote.origin.url)" || return 1
   actual="$(_external_git -C "$entry" rev-parse --verify 'HEAD^{commit}')" || return 1
