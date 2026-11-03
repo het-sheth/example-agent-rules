@@ -175,18 +175,47 @@ managed_copy() {
 # manifest_prune_dangling — remove links we own whose target no longer exists
 # (e.g. a skill directory that was renamed or deleted). Only touches manifest entries.
 # Copies are never pruned: a missing copy is a fact to report, not a stale pointer to clean up.
+# Typed links require the recorded target. Legacy bare records require an existing physical
+# parent inside this rulebook's skills directory; unresolved paths and symlink leaves survive.
 manifest_prune_dangling() {
   [ -f "$MANIFEST" ] || return 0
-  local keep line
+  local keep line target owned tab skills_root target_parent
+  tab="$(printf '\t')"
   keep="$(mktemp "$(dirname "$MANIFEST")/.links.XXXXXX")"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     _manifest_parse "$line"
     if [ "$_mf_kind" = "link" ] && [ -L "$_mf_path" ] && [ ! -e "$_mf_path" ]; then
-      rm -f "$_mf_path"; log "pruned dangling link $_mf_path"
-    else
-      printf '%s\n' "$line" >> "$keep"
+      owned=false
+      target="$(readlink "$_mf_path")"
+      case "$line" in
+        *"$tab"*)
+          if [ "$_mf_digest" != '-' ] && [ "$target" = "$_mf_digest" ]; then
+            owned=true
+          fi
+          ;;
+        *)
+          if [ -n "${REPO:-}" ] && [ -d "$REPO/skills" ]; then
+            case "$target" in
+              /*) ;;
+              *) target="$(dirname "$_mf_path")/$target" ;;
+            esac
+            if [ ! -L "$target" ] \
+               && skills_root="$(cd -P "$REPO/skills" && pwd)" \
+               && target_parent="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)"; then
+              case "$target_parent" in
+                "$skills_root"|"$skills_root"/*) owned=true ;;
+              esac
+            fi
+          fi
+          ;;
+      esac
+      if $owned; then
+        rm -f "$_mf_path"; log "pruned dangling link $_mf_path"
+        continue
+      fi
     fi
+    printf '%s\n' "$line" >> "$keep"
   done < "$MANIFEST"
   mv -f "$keep" "$MANIFEST"
 }

@@ -219,6 +219,158 @@ test_manifest_forget_removes_legacy_bare_link() {
   fi
 }
 
+test_prune_requires_typed_target_ownership() {
+  fresh_env
+  local agent dest src foreign record
+  for agent in claude codex external; do
+    dest="$HOME/.$agent/skills/retargeted"
+    src="$HOME/cache/$agent/original"
+    foreign="$HOME/foreign/$agent/missing"
+    mkdir -p "$(dirname "$src")"
+    echo source > "$src"
+    managed_link "$src" "$dest" >/dev/null
+    record="$(cat "$MANIFEST" | tail -1)"
+    rm "$dest"
+    ln -s "$foreign" "$dest"
+    manifest_prune_dangling >/dev/null
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$foreign" ] \
+       && grep -Fqx "$record" "$MANIFEST"; then
+      pass "prune: $agent retargeted dangling link and record survive"
+    else
+      fail "prune: $agent retargeted dangling link or record was removed"
+    fi
+    dest="$HOME/.$agent/skills/owned"
+    managed_link "$src" "$dest" >/dev/null
+    rm "$src"
+    manifest_prune_dangling >/dev/null
+    if [ ! -L "$dest" ] && ! grep -Fq "$dest" "$MANIFEST"; then
+      pass "prune: $agent owned dangling link and record are removed"
+    else
+      fail "prune: $agent owned dangling link or record survived"
+    fi
+  done
+}
+
+test_prune_bounds_legacy_skill_ownership() {
+  fresh_env
+  local REPO="$HOME/rulebook" name target dest
+  mkdir -p "$REPO/skills" "$REPO/docs" "$HOME/foreign" "$HOME/.claude/skills"
+  ln -s "$HOME/foreign" "$REPO/skills/escape"
+  ln -s "$HOME/foreign/missing" "$REPO/skills/leaf-escape"
+  mkdir -p "$(dirname "$MANIFEST")"
+  for name in owned relative foreign other-repo-path prefix traversal escape leaf-escape unresolved; do
+    case "$name" in
+      owned) target="$REPO/skills/missing" ;;
+      relative) target="../../rulebook/skills/missing" ;;
+      foreign) target="$HOME/foreign/missing" ;;
+      other-repo-path) target="$REPO/docs/missing" ;;
+      prefix) target="$REPO/skills-other/missing" ;;
+      traversal) target="$REPO/skills/../docs/missing" ;;
+      escape) target="$REPO/skills/escape/missing" ;;
+      leaf-escape) target="$REPO/skills/leaf-escape" ;;
+      unresolved) target="$REPO/skills/missing-parent/missing" ;;
+    esac
+    dest="$HOME/.claude/skills/$name"
+    ln -s "$target" "$dest"
+    printf '%s\n' "$dest" >> "$MANIFEST"
+    manifest_prune_dangling >/dev/null
+    case "$name" in
+      owned|relative)
+        if [ ! -L "$dest" ] && ! grep -Fxq "$dest" "$MANIFEST"; then
+          pass "prune: legacy $name skill link is removed"
+        else
+          fail "prune: legacy $name skill link or record survived"
+        fi
+        ;;
+      *)
+        if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$target" ] \
+           && grep -Fxq "$dest" "$MANIFEST"; then
+          pass "prune: legacy $name target survives"
+        else
+          fail "prune: legacy $name target or record was removed"
+        fi
+        ;;
+    esac
+  done
+}
+
+test_prune_preserves_other_manifest_artifacts() {
+  fresh_env
+  echo content | managed_copy "$HOME/copy"
+  echo content | managed_copy "$HOME/copy-missing"
+  rm "$HOME/copy-missing"
+  echo content | managed_copy "$HOME/copy-symlink"
+  rm "$HOME/copy-symlink"
+  ln -s "$HOME/missing" "$HOME/copy-symlink"
+  managed_link "$HOME/missing" "$HOME/replaced-link" >/dev/null
+  rm "$HOME/replaced-link"
+  echo user-content > "$HOME/replaced-link"
+  echo user-content > "$HOME/bare-file"
+  printf '%s\n' "$HOME/bare-file" >> "$MANIFEST"
+  managed_link "$HOME/copy" "$HOME/live-link" >/dev/null
+  ln -s "$REPO/skills/missing" "$HOME/unverifiable-link"
+  printf 'link\t%s\n' "$HOME/unverifiable-link" >> "$MANIFEST"
+  cp "$MANIFEST" "$HOME/expected-manifest"
+  manifest_prune_dangling >/dev/null
+  if cmp -s "$HOME/expected-manifest" "$MANIFEST" \
+     && [ "$(cat "$HOME/copy")" = content ] \
+     && [ ! -e "$HOME/copy-missing" ] \
+     && [ -L "$HOME/copy-symlink" ] \
+     && [ "$(readlink "$HOME/copy-symlink")" = "$HOME/missing" ] \
+     && [ "$(cat "$HOME/replaced-link")" = user-content ] \
+     && [ "$(cat "$HOME/bare-file")" = user-content ] \
+     && [ "$(readlink "$HOME/live-link")" = "$HOME/copy" ] \
+     && [ -L "$HOME/unverifiable-link" ]; then
+    pass "prune: copies, regular files, live links and targetless typed records survive unchanged"
+  else
+    fail "prune: an artifact without dangling-link ownership proof changed"
+  fi
+}
+
+test_install_preserves_retargeted_dangling_links() {
+  fresh_env
+  local repo="$HOME/rulebook" agent dest foreign record
+  mkdir -p "$repo/lib" "$repo/skills/retired"
+  cp "$REPO/install.sh" "$REPO/assemble.sh" "$REPO/_global.md" \
+     "$REPO/_machine.example.md" "$REPO/claude-extras.md" "$repo/"
+  cp "$REPO"/lib/*.sh "$repo/lib/"
+  if ! env HOME="$HOME" XDG_STATE_HOME="$HOME/.local/state" PROFILE=personal \
+       MANIFEST="$MANIFEST" AGENT_RULES_BACKUP="$HOME/backups" \
+       bash "$repo/install.sh" > "$HOME/install.log" 2>&1; then
+    cat "$HOME/install.log"
+    fail "prune install: initial fixture install failed"
+    return
+  fi
+  for agent in claude codex external; do
+    dest="$HOME/.$agent/skills/retired"
+    if [ "$agent" = external ]; then
+      managed_link "$HOME/cache/retired" "$dest" >/dev/null
+    fi
+    rm "$dest"
+    ln -s "$HOME/foreign/$agent/missing" "$dest"
+  done
+  rmdir "$repo/skills/retired"
+  cp "$MANIFEST" "$HOME/before-reinstall"
+  if ! env HOME="$HOME" XDG_STATE_HOME="$HOME/.local/state" PROFILE=personal \
+       MANIFEST="$MANIFEST" AGENT_RULES_BACKUP="$HOME/backups" \
+       bash "$repo/install.sh" > "$HOME/install.log" 2>&1; then
+    cat "$HOME/install.log"
+    fail "prune install: reinstall failed"
+    return
+  fi
+  for agent in claude codex external; do
+    dest="$HOME/.$agent/skills/retired"
+    foreign="$HOME/foreign/$agent/missing"
+    record="$(grep -F "$dest" "$HOME/before-reinstall")"
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$foreign" ] \
+       && grep -Fqx "$record" "$MANIFEST"; then
+      pass "prune install: $agent retargeted dangling link survives final pruning"
+    else
+      fail "prune install: $agent retargeted dangling link or record was removed"
+    fi
+  done
+}
+
 # --------------------------------------------------------------------------
 main() {
   test_assemble_replaces_symlink_atomically
@@ -234,6 +386,10 @@ main() {
   test_with_lock_refuses_live_holder
   test_with_lock_steals_dead_holder
   test_manifest_forget_removes_legacy_bare_link
+  test_prune_requires_typed_target_ownership
+  test_prune_bounds_legacy_skill_ownership
+  test_prune_preserves_other_manifest_artifacts
+  test_install_preserves_retargeted_dangling_links
 
   echo "----------------------------------------"
   echo "$PASS passed, $FAIL failed"
