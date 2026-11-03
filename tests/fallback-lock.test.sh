@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ -n "${FALLBACK_LOCK_TRACE_DIR:-}" ]; then
+  exec 8>"$FALLBACK_LOCK_TRACE_DIR/process-${BASHPID:-$$}.trace"
+  BASH_XTRACEFD=8
+  PS4='+ time=$EPOCHREALTIME pid=$BASHPID sub=$BASH_SUBSHELL line=$LINENO guard=${guard_owned:-unset} main=${dir_owned:-unset}: '
+  set -x
+fi
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO/lib/common.sh"
 command() {
@@ -20,6 +26,9 @@ refuse_without_read() (
 )
 if [ "${1:-}" = worker ]; then
   tmp="$2"; mode="$3"; lock="$tmp/install.lock"
+  if [ -n "${FALLBACK_LOCK_TRACE_DIR:-}" ]; then
+    trap 'worker_status=$?; printf "worker-exit time=%s pid=%s mode=%s status=%s\n" "$EPOCHREALTIME" "$BASHPID" "$mode" "$worker_status" >&2' EXIT
+  fi
   WITH_LOCK_TRIES=1
   hold() { touch "$tmp/$mode-ready"; wait_for test -e "$tmp/release-$mode"; }
   case "$mode" in
@@ -62,7 +71,7 @@ if [ "${1:-}" = worker ]; then
   exit
 fi
 tmp="$(mktemp -d)"
-trap 'touch "$tmp/release-old" "$tmp/release-new" "$tmp/release-read" "$tmp/release-nested"; wait 2>/dev/null || true; rm -rf "$tmp"' EXIT
+trap 'test_status=$?; touch "$tmp/release-old" "$tmp/release-new" "$tmp/release-read" "$tmp/release-nested"; wait 2>/dev/null || true; if [ -n "${FALLBACK_LOCK_TRACE_DIR:-}" ]; then printf "test-exit status=%s preserved-fixture=%s\n" "$test_status" "$tmp" >&2; find "$tmp" -maxdepth 2 -print >&2; for evidence in "$tmp/count" "$tmp/install.lock.d/pid"; do if [ -f "$evidence" ] && [ ! -L "$evidence" ]; then printf "evidence=%s\n" "$evidence" >&2; cat "$evidence" >&2; fi; done; else rm -rf "$tmp"; fi' EXIT
 lock="$tmp/install.lock"; WITH_LOCK_TRIES=1
 bash "$0" worker "$tmp" old & old=$!
 wait_for test -e "$tmp/old-ready"
@@ -86,7 +95,17 @@ printf 'PASS: stale inspection excludes replacement acquisition and permits retr
 printf '0\n' > "$tmp/count"
 pids=()
 for number in 1 2 3 4 5 6; do bash "$0" worker "$tmp" counter & pids+=("$!"); done
-for pid in "${pids[@]}"; do wait "$pid"; done
+if [ -n "${FALLBACK_LOCK_TRACE_DIR:-}" ]; then
+  first_failure=0
+  for pid in "${pids[@]}"; do
+    worker_status=0; wait "$pid" || worker_status=$?
+    printf 'counter-wait pid=%s status=%s\n' "$pid" "$worker_status" >&2
+    if [ "$first_failure" = 0 ] && [ "$worker_status" != 0 ]; then first_failure=$worker_status; fi
+  done
+  [ "$first_failure" = 0 ] || fail "counter worker failed (status=$first_failure)"
+else
+  for pid in "${pids[@]}"; do wait "$pid"; done
+fi
 [ "$(cat "$tmp/count")" = 6 ] || fail 'concurrent protected updates were lost'
 printf 'PASS: fallback serializes concurrent protected updates\n'
 sleep 0.01 & dead=$!; wait "$dead"

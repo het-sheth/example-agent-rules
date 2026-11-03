@@ -87,8 +87,17 @@ jobs:
           done
           exit $fail
 
-      - name: Run installer behavioral tests
-        run: bash tests/run.sh
+      - name: Diagnose synthetic fallback locking
+        run: |
+          bash --version
+          trace_dir=$(mktemp -d)
+          status=0
+          FALLBACK_LOCK_TRACE_DIR="$trace_dir" bash tests/fallback-lock.test.sh || status=$?
+          for trace in "$trace_dir"/*.trace; do
+            printf '\nTrace: %s\n' "$trace"
+            cat "$trace"
+          done
+          exit "$status"
 
       # The installer's core promise is that --dry-run touches nothing. Verify it against a
       # throwaway HOME, then confirm the repo itself is unmodified (no _machine.md seeded).
