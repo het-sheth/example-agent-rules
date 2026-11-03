@@ -210,6 +210,22 @@ external_deploy_all() {
     for other in "${_ed_all[@]}"; do [ "$path" != "$other" ] || key=false; done
     $key && _ed_all+=("$path")
   done
+  local layout_keys=()
+  for path in "${_ed_metadata[@]}" "$BACKUP"; do
+    if [ -d "$path" ]; then key="$(cd -P "$path" && pwd)" || return 1
+    else key="$(_external_deploy_location "$path")" || { warn 'invalid external metadata layout'; return 1; }; fi
+    for other in "${layout_keys[@]}"; do
+      case "$key/" in "$other/"*) warn 'overlapping external metadata'; return 1 ;; esac
+      case "$other/" in "$key/"*) warn 'overlapping external metadata'; return 1 ;; esac
+    done
+    layout_keys+=("$key")
+    for other in "${_ed_want_targets[@]}" "${_ed_old_targets[@]}"; do
+      if [ -d "$other" ]; then other="$(cd -P "$other" && pwd)" || return 1
+      else other="$(_external_deploy_location "$other")" || { warn 'invalid prior source layout'; return 1; }; fi
+      case "$key/" in "$other/"*) warn 'external metadata overlaps prepared source'; return 1 ;; esac
+      case "$other/" in "$key/"*) warn 'external metadata overlaps prepared source'; return 1 ;; esac
+    done
+  done
   for path in "${_ed_all[@]}"; do
     key="$(_external_deploy_location "$path")" || { warn "invalid deployment path: $path"; return 1; }
     for other in "${_ed_keys[@]}"; do
@@ -217,7 +233,7 @@ external_deploy_all() {
       case "$other/" in "$key/"*) warn 'overlapping deployment history'; return 1 ;; esac
     done
     _ed_keys+=("$key")
-    for other in "${_ed_metadata[@]}" "$BACKUP" "${_ed_want_targets[@]}"; do
+    for other in "${_ed_metadata[@]}" "$BACKUP" "${_ed_want_targets[@]}" "${_ed_old_targets[@]}"; do
       if [ -d "$other" ]; then other="$(cd -P "$other" && pwd)" || return 1
       else other="$(_external_deploy_location "$other")" || { warn 'invalid deployment layout'; return 1; }; fi
       case "$other/" in "$key/"*) warn 'deployment overlaps source or state'; return 1 ;; esac
@@ -230,13 +246,15 @@ external_deploy_all() {
   _ed_all+=("${_ed_metadata[@]}")
   for ((i=0; i<${#_ed_all[@]}; i++)); do
     path="${_ed_all[i]}"
-    printf '%s\t%s\n' "$i" "$path" >> "$_ed_txn/paths.tsv" || { rc=1; break; }
-    if [ -e "$path" ] || [ -L "$path" ]; then cp -a "$path" "$_ed_txn/paths/$i" || { rc=1; break; }; fi
+    if [ -e "$path" ] || [ -L "$path" ]; then key=present; else key=absent; fi
+    printf '%s\t%s\t%s\n' "$i" "$key" "$path" >> "$_ed_txn/paths.tsv" || { rc=1; break; }
+    if [ "$key" = present ]; then cp -a "$path" "$_ed_txn/paths/$i" || { rc=1; break; }; fi
   done
   if [ "$rc" -eq 0 ]; then
     cp "$plan" "$_ed_txn/installed" && printf '%s' '' > "$_ed_txn/relinquished" || rc=1
     for line in "${_ed_lost_rows[@]}"; do printf '%s\n' "$line" >> "$_ed_txn/relinquished" || rc=1; done
   fi
+  if [ "$rc" -eq 0 ]; then : > "$_ed_txn/snapshots-complete" || rc=1; fi
   if [ "$rc" -eq 0 ]; then _external_deploy_apply || rc=1; fi
   if [ "$rc" -ne 0 ] && ! _external_deploy_rollback; then
     warn "external deployment rollback failed; recovery evidence: $_ed_txn"; return 2

@@ -28,12 +28,12 @@ reject() {
   if "$@" > "$ROOT/out" 2> "$ROOT/err"; then
     printf 'FAIL: accepted invalid input: %s\n' "$*"; exit 1
   fi
-  [ -s "$ROOT/err" ] && [ ! -s "$ROOT/out" ]
+  [ -s "$ROOT/err" ] && [ ! -s "$ROOT/out" ] || exit 1
 }
 row claude "$CLAUDE" > "$PLAN"
 row codex "$CODEX" >> "$PLAN"
 _external_deploy_plan "$RULES" "$PLAN"
-[ "${#_ed_paths[@]}" -eq 2 ] && [ ! -e "$XDG_STATE_HOME" ] && [ ! -e "$HOME/.claude" ]
+[ "${#_ed_paths[@]}" -eq 2 ] && [ ! -e "$XDG_STATE_HOME" ] && [ ! -e "$HOME/.claude" ] || exit 1
 ok 'preflight accepts a complete both-agent plan without mutation'
 for kind in duplicate agent destination target missing extra empty nul; do
   row claude "$CLAUDE" > "$PLAN"
@@ -48,7 +48,7 @@ for kind in duplicate agent destination target missing extra empty nul; do
     nul) printf 'co\0dex\tdemo\t%s\t%s\n' "$CODEX" "$ROOT/cache/demo" >> "$PLAN" ;;
   esac
   reject _external_deploy_plan "$RULES" "$PLAN"
-  [ ! -e "$XDG_STATE_HOME" ] && [ ! -e "$HOME/.claude" ]
+  [ ! -e "$XDG_STATE_HOME" ] && [ ! -e "$HOME/.claude" ] || exit 1
 done
 ok 'duplicates and malformed late rows fail before any mutation'
 mv "$RULES/skills/external.list" "$RULES/skills/claude-only.list"
@@ -76,22 +76,30 @@ reject external_deploy_all "$RULES" "$PLAN"
 ok 'caller must establish installation-lock state before deployment'
 mkdir -p "$(dirname "$MANIFEST")"
 both
+( MANIFEST="$ROOT/cache/demo/ownership"; reject external_deploy_all "$RULES" "$PLAN" )
+[ ! -e "$ROOT/cache/demo/ownership" ] && [ ! -e "$CLAUDE" ] && [ ! -e "$CODEX" ] || exit 1
+ok 'metadata cannot be placed inside prepared source content'
 external_deploy_all "$RULES" "$PLAN"
-link_is "$CLAUDE" "$ROOT/cache/demo" && link_is "$CODEX" "$ROOT/cache/demo"
+link_is "$CLAUDE" "$ROOT/cache/demo" && link_is "$CODEX" "$ROOT/cache/demo" || exit 1
 cmp -s "$PLAN" "$INSTALLED"
 printf 'link\t%s\t%s\nlink\t%s\t%s\n' "$CLAUDE" "$ROOT/cache/demo" "$CODEX" "$ROOT/cache/demo" > "$ROOT/expected"
 cmp -s "$ROOT/expected" "$MANIFEST"
 cp -p "$INSTALLED" "$ROOT/installed.before"
 external_deploy_all "$RULES" "$PLAN"
-cmp -s "$ROOT/installed.before" "$INSTALLED" && [ ! -e "$BACKUP" ]
+cmp -s "$ROOT/installed.before" "$INSTALLED" && [ ! -e "$BACKUP" ] || exit 1
 ok 'fresh both-agent deployment and idempotence preserve typed ownership'
+: > "$PLAN"
+( MANIFEST="$ROOT/cache/demo/ownership"; reject external_deploy_all "$RULES" "$PLAN" )
+[ ! -e "$ROOT/cache/demo/ownership" ] && link_is "$CLAUDE" "$ROOT/cache/demo" || exit 1
+ok 'empty cleanup also protects prior prepared source locations'
+
 row claude "$CLAUDE" > "$PLAN"
 mv "$RULES/skills/external.list" "$RULES/skills/claude-only.list"
 external_deploy_all "$RULES" "$PLAN"
-[ ! -e "$CODEX" ] && [ ! -L "$CODEX" ] && [ -d "$ROOT/cache/demo" ]
+[ ! -e "$CODEX" ] && [ ! -L "$CODEX" ] && [ -d "$ROOT/cache/demo" ] || exit 1
 : > "$PLAN"
 external_deploy_all "$RULES" "$PLAN"
-[ ! -L "$CLAUDE" ] && [ ! -s "$INSTALLED" ] && [ ! -s "$MANIFEST" ]
+[ ! -L "$CLAUDE" ] && [ ! -s "$INSTALLED" ] && [ ! -s "$MANIFEST" ] || exit 1
 ok 'scope narrowing and empty disabled selection remove owned links with live sources'
 mv "$RULES/skills/claude-only.list" "$RULES/skills/external.list"
 for kind in live broken file; do
@@ -107,7 +115,7 @@ for kind in live broken file; do
   reject external_deploy_all "$RULES" "$PLAN"
   : > "$PLAN"
   external_deploy_all "$RULES" "$PLAN"
-  [ ! -s "$MANIFEST" ] && [ ! -s "$INSTALLED" ] && [ -s "$RELINQUISHED" ]
+  [ ! -s "$MANIFEST" ] && [ ! -s "$INSTALLED" ] && [ -s "$RELINQUISHED" ] || exit 1
   if [ "$kind" = file ]; then cmp -s "$CLAUDE" "$ROOT/preserved"
   else link_is "$CLAUDE" "$(readlink "$ROOT/preserved")"; fi
   both
@@ -146,12 +154,30 @@ find "$BACKUP" -mindepth 1 | sort > "$ROOT/backups.before"
 ln() { if [ "${*: -1}" = "$CODEX" ]; then return 1; fi; command ln "$@"; }
 reject external_deploy_all "$RULES" "$PLAN"
 unset -f ln
-link_is "$CLAUDE" "$ROOT/cache/demo" && link_is "$CODEX" "$ROOT/cache/demo"
-cmp -s "$MANIFEST" "$ROOT/manifest.before" && cmp -s "$INSTALLED" "$ROOT/installed.before"
+link_is "$CLAUDE" "$ROOT/cache/demo" && link_is "$CODEX" "$ROOT/cache/demo" || exit 1
+cmp -s "$MANIFEST" "$ROOT/manifest.before" && cmp -s "$INSTALLED" "$ROOT/installed.before" || exit 1
 cmp -s "$RELINQUISHED" "$ROOT/relinquished.before"
 find "$BACKUP" -mindepth 1 | sort > "$ROOT/backups.after"
 cmp -s "$ROOT/backups.before" "$ROOT/backups.after"
 ok 'second-agent failure restores both agents, backups and exact metadata bytes'
+printf 'local copy\n' > "$HOME/local-copy"
+_manifest_record copy "$HOME/local-copy" "$(_manifest_digest "$HOME/local-copy")"
+printf 'user ghost\n' > "$HOME/.claude/skills/ghost"
+printf 'claude\tghost\t%s\t%s\n' "$HOME/.claude/skills/ghost" "$ROOT/cache/demo" > "$RELINQUISHED"
+cp -p "$MANIFEST" "$ROOT/manifest.before"
+cp -p "$RELINQUISHED" "$ROOT/relinquished.before"
+for selection in replacement removal; do
+  [ "$selection" != removal ] || : > "$PLAN"
+  mv() { local last="${*: -1}"; command mv "$@" || return; [ "$last" != "$INSTALLED" ]; }
+  reject external_deploy_all "$RULES" "$PLAN"
+  unset -f mv
+  link_is "$CLAUDE" "$ROOT/cache/demo" && link_is "$CODEX" "$ROOT/cache/demo" || exit 1
+  cmp -s "$MANIFEST" "$ROOT/manifest.before" && cmp -s "$INSTALLED" "$ROOT/installed.before" || exit 1
+  cmp -s "$RELINQUISHED" "$ROOT/relinquished.before"
+  [ "$(cat "$HOME/local-copy")" = 'local copy' ]
+done
+ok 'failure after selection rename restores replacements, removals and all typed metadata'
+
 : > "$PLAN"
 external_deploy_all "$RULES" "$PLAN"
 printf 'displaced\n' > "$CLAUDE"
@@ -160,8 +186,8 @@ both
 ln() { if [ "${*: -1}" = "$CODEX" ]; then return 1; fi; command ln "$@"; }
 reject external_deploy_all "$RULES" "$PLAN"
 unset -f ln
-[ "$(cat "$CLAUDE")" = displaced ] && [ ! -L "$CODEX" ] && [ ! -e "$CODEX" ]
-[ ! -e "$MANIFEST" ] && [ ! -e "$INSTALLED" ] && [ ! -e "$RELINQUISHED" ]
+[ "$(cat "$CLAUDE")" = displaced ] && [ ! -L "$CODEX" ] && [ ! -e "$CODEX" ] || exit 1
+[ ! -e "$MANIFEST" ] && [ ! -e "$INSTALLED" ] && [ ! -e "$RELINQUISHED" ] || exit 1
 ok 'failed fresh install restores displaced files and originally absent metadata'
 rm "$CLAUDE"
 mkdir -p "$CLAUDE/inside"
@@ -169,7 +195,7 @@ printf 'nested source\n' > "$CLAUDE/inside/SKILL.md"
 ln -s "$CLAUDE/inside" "$ROOT/cache/alias"
 row claude "$CLAUDE" "$ROOT/cache/alias" > "$PLAN"
 reject external_deploy_all "$RULES" "$PLAN"
-[ -f "$CLAUDE/inside/SKILL.md" ] && [ ! -L "$CLAUDE" ]
+[ -f "$CLAUDE/inside/SKILL.md" ] && [ ! -L "$CLAUDE" ] || exit 1
 rm -r "$CLAUDE"
 printf 'displaced\n' > "$CLAUDE"
 both
@@ -182,7 +208,10 @@ if external_deploy_all "$RULES" "$PLAN" > "$ROOT/out" 2> "$ROOT/err"; then
 else [ "$?" -eq 2 ]; fi
 unset -f ln cp
 recovery="$(find "$XDG_STATE_HOME/agent-rules" -maxdepth 1 -name '.external-deploy.*' -type d)"
-[ -n "$recovery" ] && [ -f "$recovery/paths/0" ] && grep -Fq "$recovery" "$ROOT/err"
+[ -n "$recovery" ] && [ -f "$recovery/paths/0" ] && grep -Fq "$recovery" "$ROOT/err" || exit 1
+[ -f "$recovery/snapshots-complete" ]
+grep -Fq "$(printf '0\tpresent\t%s' "$CLAUDE")" "$recovery/paths.tsv"
+grep -Fq "$(printf 'absent\t%s' "$MANIFEST")" "$recovery/paths.tsv"
 reject external_deploy_all "$RULES" "$PLAN"
 ok 'failed compensation has distinct status, retained recovery evidence and retry refusal'
 printf '%s deployment assertions passed\n' "$PASS"

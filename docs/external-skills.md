@@ -81,6 +81,7 @@ set for both agents. Each no-header TSV row is `(agent, name, absolute destinati
 absolute target)`. Empty input reconciles to no external skills without parsing disabled
 catalogs. Nonempty input validates catalog applicability, destination resolvers and existing
 source directories with `SKILL.md`. Names and paths cannot contain whitespace or control bytes.
+Destinations, state, backup locations and prepared sources must not overlap physically.
 No source cache is fetched, edited or removed. Ordinary install/check wiring remains deferred.
 
 The caller must create the per-machine state directory and hold the install lock throughout
@@ -105,8 +106,10 @@ after restoring touched artifacts, backup displacements and exact prior metadata
 absence. Return 2 means recovery or cleanup needs inspection; never treat it as success.
 
 A `.external-deploy.*` state directory holds indexed `paths/` snapshots, `paths.tsv` mappings,
-`backups.tsv` moves and `directories.tsv` newly created parents. Missing indexed snapshots mean
-that the original path was absent. Failed compensation retains this evidence and blocks
+`backups.tsv` moves and `directories.tsv` newly created parents. The path mapping columns are
+`index`, `present|absent`, and `original path`. A `snapshots-complete` marker confirms that all
+originals were captured before mutation. Without it, staging did not reach deployment; do not
+infer original absence from missing snapshot files. Failed compensation retains evidence and blocks
 retries. Inspect it while holding the install lock, restore the recorded original paths and
 metadata, and remove the evidence only after verifying recovery. An interrupted live deployment
 also requires that inspection. This provides compensation for reported failures, not atomicity
