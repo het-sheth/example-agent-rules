@@ -55,6 +55,24 @@ test_managed_link_backs_up_in_the_way_file() {
   fi
 }
 
+test_managed_link_propagates_manifest_failure() {
+  local shape
+  for shape in new same; do
+    if (
+      fresh_env
+      local src="$HOME/source" dest="$HOME/dest" status
+      echo source > "$src"
+      managed_link "$src" "$HOME/sentinel" >/dev/null
+      [ "$shape" != same ] || ln -s "$src" "$dest"
+      mv() { return 1; }
+      if managed_link "$src" "$dest" >/dev/null; then status=0; else status=$?; fi
+      [ "$status" -ne 0 ] && [ -L "$dest" ] \
+        && grep -Fq "$HOME/sentinel" "$MANIFEST" && ! grep -Fq "$dest" "$MANIFEST"
+    ); then pass "manifest: $shape managed link propagates failed ownership write"
+    else fail "manifest: $shape managed link masked failed ownership write"; fi
+  done
+}
+
 # ---------------------------------------------------------------- T5.5 ---
 test_with_lock_serializes_install() {
   fresh_env
@@ -377,6 +395,7 @@ test_install_preserves_retargeted_dangling_links() {
 main() {
   test_assemble_replaces_symlink_atomically
   test_managed_link_backs_up_in_the_way_file
+  test_managed_link_propagates_manifest_failure
   test_with_lock_serializes_install
   test_install_uses_with_lock
   test_profile_switch_removes_skill_links

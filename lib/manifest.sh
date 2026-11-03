@@ -88,14 +88,15 @@ _manifest_parse() {
 managed_link() {
   local src="$1" dest="$2"
   if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
-    _manifest_record link "$dest" "$src"; return 0
+    _manifest_record link "$dest" "$src" || return 1
+    return 0
   fi
   if [ -e "$dest" ] || [ -L "$dest" ]; then
     backup_existing "$dest"
   fi
   mkdir -p "$(dirname "$dest")"
   ln -s "$src" "$dest" || { warn "failed to link $dest -> $src"; return 1; }
-  _manifest_record link "$dest" "$src"
+  _manifest_record link "$dest" "$src" || return 1
   log "linked $dest -> $src"
 }
 

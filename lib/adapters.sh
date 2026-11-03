@@ -123,7 +123,7 @@ _codex_skill_record() {
 }
 
 _codex_skill_owned() {
-  local repo="$1" name="$2" path="$3" record target resolved root
+  local repo="$1" name="$2" path="$3" record target resolved root parent
   [ -L "$path" ] || return 1
   record="$(_codex_skill_record "$path")"
   [ -n "$record" ] || return 1
@@ -137,9 +137,13 @@ _codex_skill_owned() {
     [ "$record" = "$path" ] || return 1
   fi
   case "$target" in /*) ;; *) target="$(dirname "$path")/$target" ;; esac
-  resolved="$(cd -P "$target" 2>/dev/null && pwd)" || return 1
   root="$(cd -P "$repo/skills" && pwd)" || return 1
-  case "$resolved" in "$root"/*) return 0 ;; *) return 1 ;; esac
+  if resolved="$(cd -P "$target" 2>/dev/null && pwd)"; then
+    case "$resolved" in "$root"/*) return 0 ;; *) return 1 ;; esac
+  fi
+  [ ! -e "$target" ] && [ ! -L "$target" ] || return 1
+  parent="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)" || return 1
+  case "$parent" in "$root"|"$root"/*) return 0 ;; *) return 1 ;; esac
 }
 
 # Upgrade proven ownership so generic cleanup also handles relative legacy targets.
@@ -276,7 +280,26 @@ rollback_codex_skills() {
       warn 'backup restoration failed; migration retained'; return 1
     fi
   fi
-  mv -f "$tmp" "$MANIFEST" || { warn 'restored links but manifest restoration failed'; return 1; }
+  if ! mv -f "$tmp" "$MANIFEST"; then
+    local recovered=true
+    if [ "$state" = backup ]; then
+      if [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ]; then
+        mv "$new" "$backup_path" || recovered=false
+      else recovered=false; fi
+    fi
+    if [ "$state" != same ] && $recovered; then
+      ln -s "$target" "$new" || recovered=false
+    fi
+    if $created_old && $recovered; then
+      if [ -L "$old" ] && [ "$(readlink "$old")" = "$old_target" ]; then
+        rm "$old" || recovered=false
+      else recovered=false; fi
+    fi
+    rm -f "$tmp"
+    if $recovered; then warn 'manifest restoration failed; forward deployment retained, retry reversal'
+    else warn "manifest restoration and compensation failed; recovery evidence: $record"; fi
+    return 1
+  fi
   printf '%s\n' reverted | atomic_write "$record/reverted" || return 1
   log "Codex skill migration reversed: $record"
 }

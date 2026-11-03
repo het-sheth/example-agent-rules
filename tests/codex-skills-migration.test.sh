@@ -193,5 +193,106 @@ if rollback "$XDG_STATE_HOME/agent-rules/migrations/codex-skills/nonexistent"; t
 else PASS=$((PASS + 1)); fi
 snapshot | sort > "$CASE/after"
 assert cmp -s "$CASE/before" "$CASE/after"
+fault_manifest_rename() {
+  mkdir -p "$CASE/bin"
+  export TASK2B_REAL_MV="$(command -v mv)" TASK2B_FAULT_MANIFEST="$MANIFEST"
+  export TASK2B_FAULT_NEW="$NEW" TASK2B_FAULT_ONCE="$CASE/fault-used" TASK2B_FAULT_MODE="$1"
+  cat > "$CASE/bin/mv" <<'SH'
+#!/usr/bin/env bash
+prev=''
+last=''
+for arg in "$@"; do prev="$last"; last="$arg"; done
+if [ "$last" = "$TASK2B_FAULT_MANIFEST" ] && [ ! -e "$TASK2B_FAULT_ONCE" ]; then
+  if [ "$TASK2B_FAULT_MODE" = rollback ] || grep -Fq "$TASK2B_FAULT_NEW" "$prev"; then
+    : > "$TASK2B_FAULT_ONCE"
+    echo 'injected manifest rename failure' >&2
+    exit 1
+  fi
+fi
+exec "$TASK2B_REAL_MV" "$@"
+SH
+  chmod +x "$CASE/bin/mv"
+}
+for shape in new same; do
+  fresh "forward-manifest-fault-$shape"
+  legacy typed
+  if [ "$shape" = same ]; then mkdir -p "$(dirname "$NEW")"; ln -s "$TARGET" "$NEW"; fi
+  fault_manifest_rename forward
+  if PATH="$CASE/bin:$PATH" run_install; then
+    echo "FAIL: destination manifest failure passed ($shape)"; FAIL=$((FAIL + 1))
+  else PASS=$((PASS + 1)); fi
+  assert test -f "$CASE/fault-used"
+  assert link_is "$OLD" "$TARGET"
+  assert grep -Fxq "$(printf 'link\t%s\t%s' "$OLD" "$TARGET")" "$MANIFEST"
+  assert link_is "$NEW" "$TARGET"
+  assert test -z "$(records)"
+  assert run_install
+  assert absent "$OLD"
+  assert grep -Fxq "$(printf 'link\t%s\t%s' "$NEW" "$TARGET")" "$MANIFEST"
+done
+for kind in bare bare-relative typed-relative; do
+  fresh "deleted-source-$kind"
+  mkdir -p "$(dirname "$NEW")"
+  for dest in "$OLD" "$NEW"; do
+    if [ "$kind" = bare ]; then target="$TARGET"; else target=../../../book/skills/demo; fi
+    ln -s "$target" "$dest"
+    if [ "$kind" = typed-relative ]; then printf 'link\t%s\t%s\n' "$dest" "$target" >> "$MANIFEST"
+    else printf '%s\n' "$dest" >> "$MANIFEST"; fi
+  done
+  rmdir "$TARGET"
+  assert run_install work
+  assert absent "$OLD"
+  assert absent "$NEW"
+  if grep -Fq /skills/demo "$MANIFEST"; then
+    echo "FAIL: deleted-source records survived ($kind)"; FAIL=$((FAIL + 1))
+  else PASS=$((PASS + 1)); fi
+done
+for next in retry work; do
+  for shape in missing same file symlink directory; do
+    fresh "rollback-manifest-fault-$next-$shape"
+    legacy typed
+    mkdir -p "$(dirname "$NEW")"
+    case "$shape" in
+      same) ln -s "$TARGET" "$NEW" ;;
+      file) echo displaced > "$NEW" ;;
+      symlink) ln -s "$HOME/user/missing" "$NEW" ;;
+      directory) mkdir "$NEW"; echo displaced > "$NEW/content" ;;
+    esac
+    assert run_install
+    record="$(dirname "$(records)")"
+    backup="$(cat "$record/backup-path")"
+    cp "$MANIFEST" "$CASE/expected"
+    fault_manifest_rename rollback
+    if PATH="$CASE/bin:$PATH" rollback "$record"; then
+      echo "FAIL: rollback manifest failure passed ($shape)"; FAIL=$((FAIL + 1))
+    else PASS=$((PASS + 1)); fi
+    assert test -f "$CASE/fault-used"
+    assert absent "$OLD"
+    assert link_is "$NEW" "$TARGET"
+    assert cmp -s "$CASE/expected" "$MANIFEST"
+    assert absent "$record/reverted"
+    case "$shape" in
+      file) assert test "$(cat "$backup")" = displaced ;;
+      symlink) assert link_is "$backup" "$HOME/user/missing" ;;
+      directory) assert test "$(cat "$backup/content")" = displaced ;;
+    esac
+    if [ "$next" = work ]; then
+      assert run_install work
+      assert absent "$OLD"
+      assert absent "$NEW"
+    else
+      assert rollback "$record"
+      assert link_is "$OLD" "$TARGET"
+      assert grep -Fxq "$(printf 'link\t%s\t%s' "$OLD" "$TARGET")" "$MANIFEST"
+      case "$shape" in
+        missing) assert absent "$NEW" ;;
+        same) assert link_is "$NEW" "$TARGET" ;;
+        file) assert test "$(cat "$NEW")" = displaced ;;
+        symlink) assert link_is "$NEW" "$HOME/user/missing" ;;
+        directory) assert test "$(cat "$NEW/content")" = displaced ;;
+      esac
+    fi
+  done
+done
 echo "$PASS passed, $FAIL failed (Codex migration)"
 [ "$FAIL" -eq 0 ]
