@@ -15,30 +15,61 @@ with_lock() {
     flock -u 9
     return $rc
   fi
-  # Portable fallback where flock is absent (macOS ships without it): mkdir is an atomic
-  # mutex. Spin up to ~5s to match `flock -w 5`. Unlike flock, a mkdir lock is NOT released
-  # when the holding process dies — but "held past the budget" alone does not make it stale:
-  # a legitimate install can outlast 5s, and stealing its lock would defeat the serialization
-  # this function exists for. The holder records its PID; steal only when that process is
-  # provably gone, and fail loudly when it is alive.
-  local dir="${lock}.d" i=0 max="${WITH_LOCK_TRIES:-50}"
-  while ! mkdir "$dir" 2>/dev/null; do
-    i=$((i + 1))
-    if [ "$i" -ge "$max" ]; then
-      local holder; holder="$(cat "$dir/pid" 2>/dev/null || true)"
-      if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-        die "lock $dir held by running pid $holder; wait for it to finish (rm -rf the dir only if you know it is wrong)"
+  (
+    local dir="${lock}.d" tries=0 max="${WITH_LOCK_TRIES:-50}" holder rc
+    local guard_owned=false dir_owned=false
+    local processes owner self="${BASHPID:-$$}" self_seen owner_seen
+    [[ "$max" =~ ^[1-9][0-9]*$ ]] || { warn 'invalid lock retry budget'; return 1; }
+    trap 'if $dir_owned; then rm -f "$dir/pid"; rmdir "$dir" 2>/dev/null || true; fi; if $guard_owned; then rmdir "$dir.reap" 2>/dev/null || true; fi' EXIT
+    trap 'exit 1' HUP INT TERM
+    while :; do
+      if mkdir "$dir.reap" 2>/dev/null; then
+        guard_owned=true
+        if mkdir "$dir" 2>/dev/null; then dir_owned=true; break; fi
+        tries=$((tries + 1))
+        if [ "$tries" -ge "$max" ]; then
+          holder="$(cat "$dir/pid" 2>/dev/null)" || holder=''
+          if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+            guard_owned=false
+            rmdir "$dir.reap" || return 1
+            continue
+          fi
+          processes=''; self_seen=false; owner_seen=true
+          if [ -O "$dir" ] && [ -r "$dir" ] && [ -O "$dir/pid" ] && [ -r "$dir/pid" ] \
+            && [[ "$holder" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$holder" 2>/dev/null \
+            && processes="$(ps -e -o pid= 2>/dev/null)"; then
+            owner_seen=false
+            while read -r owner; do
+              [[ "$owner" =~ ^[1-9][0-9]*$ ]] || { owner_seen=true; break; }
+              [ "$owner" != "$self" ] || self_seen=true
+              [ "$owner" != "$holder" ] || owner_seen=true
+            done <<< "$processes"
+          fi
+          if [ -d "$dir" ] && [ ! -L "$dir" ] && [ -f "$dir/pid" ] && [ ! -L "$dir/pid" ] \
+            && $self_seen && ! $owner_seen; then
+            rm "$dir/pid" && rmdir "$dir" && mkdir "$dir" \
+              || { warn "cannot recover stale lock $dir"; return 1; }
+            dir_owned=true
+            break
+          fi
+          warn "lock $dir has a live or unknown holder; refusing to steal it"; return 1
+        fi
+        guard_owned=false
+        rmdir "$dir.reap" || return 1
+      else
+        tries=$((tries + 1))
+        if [ "$tries" -ge "$max" ]; then
+          warn "lock acquisition or recovery in progress: $dir"; return 1
+        fi
       fi
-      warn "stale lock $dir (holder exited without cleanup); overriding"
-      rm -rf "$dir"; mkdir "$dir" 2>/dev/null || die "could not acquire lock $lock"
-      break
-    fi
-    sleep 0.1
-  done
-  printf '%s' "$$" > "$dir/pid" 2>/dev/null || true
-  "$@"; local rc=$?
-  rm -rf "$dir" 2>/dev/null || true
-  return $rc
+      sleep 0.1
+    done
+    printf '%s\n' "$self" > "$dir/pid" || return 1
+    guard_owned=false
+    rmdir "$dir.reap" || return 1
+    "$@"; rc=$?
+    return "$rc"
+  )
 }
 
 # backup_existing <path> — move anything in the way into $BACKUP. Never rm.

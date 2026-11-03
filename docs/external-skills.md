@@ -69,6 +69,22 @@ lock helper opens fd 9; the waiting parent must retain its installation lock. Th
 serializes separate state directories that share a cache. No manifest or deployment state is
 read or changed by this library.
 
+Without `flock`, acquisition and stale-owner recovery share a `.d.reap` directory guard,
+held through PID publication. A replacement cannot acquire while recovery inspects the old
+owner. Recovery requires an ordinary, readable lock directory and PID file owned by the
+current user, a positive numeric PID, failed `kill -0`, and successful PID-only `ps -e`
+inspection containing the current lock subprocess but no recorded owner. This relies on
+visibility of this user's processes. Visible, inaccessible or unknown owners, malformed or
+unavailable inspection, symlinks and interrupted recovery guards are refused. Ordinary
+failures clean up owned locks and preserve the protected command's status. An untrappable
+interruption can leave `.d.reap` behind; inspect and remove it manually only after confirming
+no acquisition or recovery is running. Unknown lock evidence also requires manual inspection.
+The fallback runs the protected command in a child subshell; the `flock` path retains fd 9
+in its caller. Source-cache consumers must pin a revision containing this recovery protocol;
+the earlier PID-read-then-delete helper does not provide safe fallback cache serialization.
+All participants sharing a lock must use this protocol; replace older helpers only while
+no installation or preparation is running.
+
 To advance a lock, review the chosen source commit and selected skill paths, update the full
 SHA manually, then validate and prepare it against a test cache. Review the catalog and lock
 diff together. Retain old cache entries for rollback; restoring an old catalog and lock can

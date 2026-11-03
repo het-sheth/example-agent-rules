@@ -200,7 +200,7 @@ test_with_lock_refuses_live_holder() {
   out="$( (unset -f flock; command -v flock >/dev/null && exit 77; WITH_LOCK_TRIES=3 with_lock "$lock" true) 2>&1 )"; rc=$?
   kill "$holder" 2>/dev/null; rm -rf "$lock.d"
   if [ "$rc" -eq 77 ]; then pass "R2-lock: (flock present; fallback path not exercised on this runner)"; return; fi
-  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "held by running pid"; then
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "refusing to steal"; then
     pass "R2-lock: live holder's lock is refused, not stolen"
   else
     fail "R2-lock: expected refusal for live holder (rc=$rc out=$out)"
@@ -411,6 +411,9 @@ main() {
   test_prune_bounds_legacy_skill_ownership
   test_prune_preserves_other_manifest_artifacts
   test_install_preserves_retargeted_dangling_links
+  if bash "$REPO/tests/fallback-lock.test.sh"; then pass "Fallback lock suite"
+  else fail "Fallback lock suite"; fi
+
   if bash "$REPO/tests/codex-skills-migration.test.sh"; then pass "Codex migration suite"
   else fail "Codex migration suite"; fi
 
