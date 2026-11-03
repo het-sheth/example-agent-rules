@@ -131,3 +131,51 @@ Run `./install.sh` to install the exact locked commits. Ordinary installation ne
 lock. Remove a catalog row and reinstall to remove its still-owned links. Moving a portable row
 to the Claude-only catalog also removes its owned Codex link. Switching to a disabled profile
 cleans up external selections even when catalogs are malformed. User-retargeted artifacts survive.
+
+## Check and dry-run
+
+`external_skills_plan repo cache` is the read-only planning API for downstream adoption and
+pinning. It prints the complete desired `(agent, name, destination, expected target)` TSV only
+after offline source verification succeeds, or prints nothing and returns nonzero on failure.
+A disabled profile returns an empty plan without catalog parsing. It reads no installed state
+and creates no files. Pinning can compare this plan with its separately snapshotted state.
+
+`check_external_skills_all repo cache` uses the same profile, selection callbacks, destination
+resolver and cache identity as installation. It verifies selected paths, source origin, locked
+revision and cache cleanliness offline, then compares the complete installed set and exact typed
+manifest ownership. It rejects missing/wrong destinations, malformed installed or relinquished
+state, stale selections and manifest links into the current cache without installed evidence.
+Occupied relinquished destinations report conflicts. Absent relinquished destinations report
+stale evidence until a successful installation clears it. These reports do not remove user files.
+
+`external_skill_cache` prints the canonical absolute cache path from the override or default.
+It does not create that path. Source all libraries in this order: `common.sh`, `profile.sh`,
+`manifest.sh`, `adapters.sh`, `external-skills.sh`, `external-deploy.sh`, `external-install.sh`.
+Wrappers can override the four read-only callbacks after sourcing. Installation, check and
+dry-run each evaluate selection once for the complete union. Check never calls preparation or
+deployment, fetches, assembles, creates a cache, takes a write lock or writes state.
+
+`install_external_skills_all` with `DRY=true` reports selected URLs, exact revisions, paths and
+intended destinations plus selection reconciliation. It does not call preparation or deployment,
+create temporary files or inspect missing source contents. A successful dry-run therefore does
+not prove that unavailable sources can be fetched or that their selected paths exist. Both check
+and dry-run report retained `.external-deploy.*` recovery evidence and fail pending inspection.
+
+## Source updates and rollback
+
+1. Review the source commit and selected skill contents. Edit the full SHA in
+   `skills/external.lock` manually, reviewing the catalog and lock diff together.
+2. Run `PROFILE=personal ./install.sh --dry-run` to inspect selected sources and destinations.
+3. Run `PROFILE=personal ./install.sh` to prepare missing locked revisions and deploy the union.
+   Existing invalid cache entries fail without repair. Failed preparation keeps the previous
+   external deployment; a reported deployment failure compensates all agents together.
+4. Run `PROFILE=personal ./install.sh check` to verify the cache, links and ownership offline.
+5. To roll back, restore the previous catalog and lock and run installation again. Retain old
+   cache entries so this works offline. Neither ordinary install nor check advances a source.
+
+For selection removal, delete the catalog row and reinstall; no source deletion is needed.
+Portable-to-Claude-only reclassification removes only the still-owned Codex deployment.
+A disabled profile bypasses malformed catalogs and reconciles to no external selections.
+Snapshot both external TSV files with the typed manifest, displaced artifacts/backups and any
+recovery evidence when moving or pinning machine state. Restoration must keep source cache
+entries and expected paths available. Never interpret return 2 as a completed installation.

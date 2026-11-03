@@ -31,6 +31,7 @@ absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 source_repo() {
   SOURCE="$ROOT/source"
   mkdir -p "$SOURCE/portable" "$SOURCE/only"
+  printf 'source root\n' > "$SOURCE/SKILL.md"
   printf 'version one\n' > "$SOURCE/portable/SKILL.md"
   printf 'Claude only\n' > "$SOURCE/only/SKILL.md"
   git init -q --template= "$SOURCE"
@@ -49,11 +50,12 @@ select_source() {
   printf '%s %s\n' "$URL" "$1" > "$BOOK/skills/external.lock"
 }
 external_snapshot() {
-  tar -cf "$CASE/external.tar" -C "$CASE" home/.claude/skills home/.agents/skills state/agent-rules/external-installed.tsv state/agent-rules/external-relinquished.tsv
+  tar -cf "$CASE/external.tar" -C "$CASE" home/.claude/skills home/.agents/skills state/agent-rules/links state/agent-rules/external-installed.tsv state/agent-rules/external-relinquished.tsv
 }
 source_repo
 fresh empty
 require run
+require run check
 require test ! -s "$INSTALLED"
 require absent "$CACHE"
 ok 'empty shipped defaults install without a source cache'
@@ -89,6 +91,14 @@ reject
 external_snapshot
 require cmp -s "$CASE/before.tar" "$CASE/external.tar"
 ok 'a later selected missing path fails before any external deployment changes'
+select_source "$SECOND"
+printf 'late file://%s/unavailable only\n' "$ROOT" >> "$BOOK/skills/claude-only.list"
+printf 'file://%s/unavailable %s\n' "$ROOT" "$FIRST" >> "$BOOK/skills/external.lock"
+reject
+external_snapshot
+require cmp -s "$CASE/before.tar" "$CASE/external.tar"
+ok 'failure preparing a later source preserves every earlier-agent deployment and ownership record'
+
 select_source "$FIRST"
 mkdir "$BOOK/skills/portable"
 reject
@@ -145,4 +155,110 @@ require run
 case "$(readlink "$CLAUDE")" in "$CASE/override/"*) ;; *) exit 1 ;; esac
 require absent "$CACHE"
 ok 'explicit cache override controls source identity location'
+readonly_run() {
+  local expected="$1" status=0
+  shift
+  tar -cf "$ROOT/readonly-before.tar" --exclude=./output -C "$CASE" .
+  run "$@" || status=$?
+  tar -cf "$ROOT/readonly-after.tar" --exclude=./output -C "$CASE" .
+  require cmp -s "$ROOT/readonly-before.tar" "$ROOT/readonly-after.tar"
+  if [ "$expected" = pass ]; then require test "$status" -eq 0
+  else require test "$status" -ne 0; fi
+}
+fresh offline-check
+select_source "$FIRST"
+require run
+TARGET_ONE="$(readlink "$CLAUDE")"
+ENTRY="${TARGET_ONE%/portable}"
+mv "$SOURCE" "$ROOT/source-offline"
+readonly_run pass check
+readonly_run pass --dry-run
+ok 'offline valid-cache check and dry-run preserve the complete checkout, HOME, state and cache'
+git -C "$ENTRY" config remote.origin.url file:///unavailable/source
+readonly_run fail check
+ok 'offline check rejects a cache with the wrong origin without repairing it'
+git -C "$ENTRY" config remote.origin.url "$URL"
+git -C "$ENTRY" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm drift
+readonly_run fail check
+git -C "$ENTRY" update-ref HEAD "$FIRST"
+printf 'cache drift\n' >> "$ENTRY/portable/SKILL.md"
+readonly_run fail check
+git -C "$ENTRY" checkout -q -- portable/SKILL.md
+ok 'offline check rejects wrong revision and dirty source content without writes'
+mv "$ENTRY" "$ROOT/unavailable-cache"
+readonly_run fail check
+require absent "$ENTRY"
+mv "$ROOT/unavailable-cache" "$ENTRY"
+ok 'missing required cache fails offline check without preparation or cache creation'
+cp -p "$MANIFEST" "$ROOT/saved-manifest"
+awk -F '\t' -v p="$CLAUDE" '$2 != p' "$MANIFEST" > "$ROOT/changed-manifest"
+cp "$ROOT/changed-manifest" "$MANIFEST"
+readonly_run fail check
+cp "$ROOT/saved-manifest" "$MANIFEST"
+cp -p "$INSTALLED" "$ROOT/saved-installed"
+: > "$INSTALLED"
+readonly_run fail check
+cp "$ROOT/saved-installed" "$INSTALLED"
+ok 'check requires both installed selection and exact typed manifest ownership'
+rm "$CLAUDE"
+ln -s "$TARGET_ONE"$'\n' "$CLAUDE"
+readonly_run fail check
+rm "$CLAUDE"
+ln -s "$TARGET_ONE" "$CLAUDE"
+printf 'malformed state\n' > "$LOST"
+readonly_run fail check
+: > "$LOST"
+mkdir "$XDG_STATE_HOME/agent-rules/.external-deploy.interrupted"
+readonly_run fail check
+readonly_run fail --dry-run
+rmdir "$XDG_STATE_HOME/agent-rules/.external-deploy.interrupted"
+ok 'retargeted links, malformed tombstones and recovery evidence fail check without mutation'
+: > "$BOOK/skills/external.list"
+readonly_run fail check
+TEST_PROFILE=work readonly_run fail check
+ok 'removed selections and profile disablement report stale installed state'
+mv "$ROOT/source-offline" "$SOURCE"
+TEST_PROFILE=work require run
+printf 'claude\tportable\t%s\t%s\n' "$CLAUDE" "$TARGET_ONE" > "$LOST"
+printf 'preserved user content\n' > "$CLAUDE"
+TEST_PROFILE=work readonly_run fail check
+rm "$CLAUDE"
+TEST_PROFILE=work readonly_run fail check
+: > "$LOST"
+TEST_PROFILE=work readonly_run pass check
+ok 'occupied and stale relinquished evidence is reported until reconciliation clears it'
+fresh missing-dry-run
+select_source "$FIRST"
+mv "$SOURCE" "$ROOT/source-offline"
+readonly_run pass --dry-run
+require absent "$CACHE"
+require absent "$XDG_STATE_HOME"
+readonly_run fail check
+require absent "$CACHE"
+ok 'dry-run reports unavailable selected sources without fetching or creating cache/state'
+printf 'malformed catalog\n' > "$BOOK/skills/external.list"
+readonly_run fail --dry-run
+TEST_PROFILE=work readonly_run pass --dry-run
+TEST_PROFILE=work readonly_run fail check
+require absent "$CACHE"
+mv "$ROOT/source-offline" "$SOURCE"
+ok 'dry-run validates enabled catalogs and disabled dry-run bypasses malformed catalogs'
+fresh planner
+select_source "$FIRST"
+require run
+PROFILE=personal bash -c '. "$1/install.sh"; external_skills_plan "$1" "$2"' _ "$BOOK" "$CACHE" > "$ROOT/plan.tsv"
+require cmp -s "$ROOT/plan.tsv" "$INSTALLED"
+if PROFILE=personal bash -c '. "$1/install.sh"; skills_dest_for() { printf "relative\n"; }; external_skills_plan "$1" "$2"' _ "$BOOK" "$CACHE" > "$ROOT/plan.tsv" 2> "$ROOT/plan-error"; then
+  echo 'FAIL: offline planner accepted an invalid destination resolver'; exit 1
+fi
+require test ! -s "$ROOT/plan.tsv"
+ok 'public offline planner returns the complete deployment schema and refuses invalid resolver output'
+fresh root-path
+printf 'root %s .\n' "$URL" > "$BOOK/skills/external.list"
+printf '%s %s\n' "$URL" "$FIRST" > "$BOOK/skills/external.lock"
+readonly_run pass --dry-run
+require run
+require test "$(cat "$HOME/.claude/skills/root/SKILL.md")" = 'source root'
+readonly_run pass check
+ok 'source-root selections share valid paths in dry-run, installation and offline check'
 printf '%s integration assertions passed\n' "$PASS"

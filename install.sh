@@ -31,7 +31,8 @@ DRY=false
 
 # ------------------------------------------------------------------ check ---
 do_check() {
-  local fail=0
+  local fail=0 cache
+  cache="$(external_skill_cache)" || return 1
   echo "PROFILE: $PROFILE"
   report_adapter_state "$REPO"
   echo "WIRING:"
@@ -45,6 +46,7 @@ do_check() {
   check_codex_adapter  "$REPO" || fail=1
   check_gemini_adapter "$REPO" || fail=1
   check_skills         "$REPO" || fail=1
+  check_external_skills_all "$REPO" "$cache" || fail=1
   # Deployment discipline: every artifact this repo puts on disk is either a symlink (which
   # cannot drift) or a tracked copy whose digest was recorded when it was written. This is the
   # step that catches a deployed file edited in place instead of at its source.
@@ -75,6 +77,8 @@ do_check() {
 
 # ---------------------------------------------------------------- install ---
 do_install() {
+  local cache
+  cache="$(external_skill_cache)" || return 1
   if $DRY; then
     echo "install (DRY RUN — nothing will change)"
   else
@@ -98,7 +102,7 @@ do_install() {
     bash "$REPO/assemble.sh"
   fi
 
-  install_external_skills_all "$REPO" "$(external_skill_cache)" || return $?
+  install_external_skills_all "$REPO" "$cache" || return $?
 
   install_claude_adapter "$REPO"
   install_codex_adapter  "$REPO"

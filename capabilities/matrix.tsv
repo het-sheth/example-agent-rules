@@ -5,6 +5,8 @@
 Rules|@-import shim in ~/.claude/CLAUDE.md|managed symlink ~/.codex/AGENTS.md|managed symlink ~/.gemini/GEMINI.md
 Extras|claude-extras.md loaded by the shim|not wired: no documented import|not wired: no documented import
 Skills|managed links into ~/.claude/skills|managed links into ~/.agents/skills|not installed: no skills contract
+External skills|portable and Claude-only locked sources|portable locked sources only|not installed: no skills contract
+Source check|offline cache, selection and ownership|offline cache, selection and ownership|not applicable
 Detection|claude on PATH or ~/.claude exists|codex on PATH or ~/.codex exists|gemini on PATH or ~/.gemini exists
 Verify|shim content compared as text (a trailing-newline-only difference is ignored)|link target compared|link target compared
 Provenance|tracked copy: sha256 recorded, drift fails check|managed symlink: no second copy to drift|managed symlink: no second copy to drift

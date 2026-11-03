@@ -99,6 +99,17 @@ Reversal refuses changed destinations or ownership and missing backups. A subseq
 migrates forward again. Fresh installations have no migration record. A work profile removes
 still-owned links in both Codex locations. Check requires the new location; dry-run never migrates or writes evidence.
 
+External skills use `skills/external.list` for portable selections, `skills/claude-only.list`
+for Claude-only selections and `skills/external.lock` for full immutable Git commits. These
+files ship empty. A personal-profile install prepares every selected source before changing
+external links, then reconciles both agents in one transaction. Cache defaults to
+`${XDG_CACHE_HOME:-$HOME/.cache}/agent-rules/skills`; `AGENT_RULES_SKILL_CACHE` overrides it.
+`check` validates sources, selection and ownership offline. Dry-run reports the source and link
+plan without fetching or writing. To update a source, review and edit its full lock manually,
+then reinstall. Remove a selection and reinstall to clean up still-owned links. For rollback,
+restore the prior catalog and lock and reinstall using retained cache entries. See
+[external skill operations](docs/external-skills.md) for state, conflicts and recovery.
+
 An agent that is not installed gets nothing and is reported as absent. An agent with no
 documented surface for a feature has that gap recorded in `capabilities/matrix.tsv` rather than
 worked around by guessing at a config format.
