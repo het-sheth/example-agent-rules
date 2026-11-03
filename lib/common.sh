@@ -17,15 +17,46 @@ with_lock() {
   fi
   (
     local dir="${lock}.d" tries=0 max="${WITH_LOCK_TRIES:-50}" holder rc
-    local guard_owned=false dir_owned=false
+    local guard_owned=false dir_owned=false pid_written=false
     local processes owner self="${BASHPID:-$$}" self_seen owner_seen
     [[ "$max" =~ ^[1-9][0-9]*$ ]] || { warn 'invalid lock retry budget'; return 1; }
-    trap 'if $dir_owned; then rm -f "$dir/pid"; rmdir "$dir" 2>/dev/null || true; fi; if $guard_owned; then rmdir "$dir.reap" 2>/dev/null || true; fi' EXIT
+    _with_lock_release_guard() {
+      local recorded
+      guard_owned=false
+      if [ -f "$dir.reap" ] && [ ! -L "$dir.reap" ] && [ -O "$dir.reap" ] && [ -r "$dir.reap" ] \
+        && recorded="$(cat "$dir.reap" 2>/dev/null)" && [ "$recorded" = "$self" ]; then
+        rm "$dir.reap" || { warn "cannot release lock guard $dir.reap"; return 1; }
+      else
+        warn "lock guard evidence changed; preserving $dir.reap"; return 1
+      fi
+    }
+    _with_lock_cleanup() {
+      local result=$? recorded
+      if $dir_owned; then
+        dir_owned=false
+        if [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] && {
+          if [ -f "$dir/pid" ] && [ ! -L "$dir/pid" ] && [ -O "$dir/pid" ] && [ -r "$dir/pid" ]; then
+            recorded="$(cat "$dir/pid" 2>/dev/null)" && [ "$recorded" = "$self" ]
+          else
+            ! $pid_written && [ ! -e "$dir/pid" ] && [ ! -L "$dir/pid" ]
+          fi
+        }; then
+          if rm -f "$dir/pid" && rmdir "$dir"; then :
+          else warn "cannot clean up owned lock $dir"; [ "$result" != 0 ] || result=1; fi
+        else
+          warn "lock owner evidence changed; preserving $dir"; [ "$result" != 0 ] || result=1
+        fi
+      fi
+      if $guard_owned; then _with_lock_release_guard || { [ "$result" != 0 ] || result=1; }; fi
+      exit "$result"
+    }
+    trap '_with_lock_cleanup' EXIT
     trap 'exit 1' HUP INT TERM
     while :; do
-      if mkdir "$dir.reap" 2>/dev/null; then
+      if [ ! -e "$dir.reap" ] && [ ! -L "$dir.reap" ] \
+        && (set -C; printf '%s\n' "$self" > "$dir.reap") 2>/dev/null; then
         guard_owned=true
-        if mkdir "$dir" 2>/dev/null; then dir_owned=true; break; fi
+        if [ ! -e "$dir" ] && [ ! -L "$dir" ] && mkdir "$dir" 2>/dev/null; then dir_owned=true; break; fi
         tries=$((tries + 1))
         if [ "$tries" -ge "$max" ]; then
           holder=''
@@ -34,8 +65,7 @@ with_lock() {
             holder="$(cat "$dir/pid" 2>/dev/null)" || holder=''
           fi
           if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
-            guard_owned=false
-            rmdir "$dir.reap" || return 1
+            _with_lock_release_guard || return 1
             continue
           fi
           processes=''; self_seen=false; owner_seen=true
@@ -58,8 +88,7 @@ with_lock() {
           fi
           warn "lock $dir has a live or unknown holder; refusing to steal it"; return 1
         fi
-        guard_owned=false
-        rmdir "$dir.reap" || return 1
+        _with_lock_release_guard || return 1
       else
         tries=$((tries + 1))
         if [ "$tries" -ge "$max" ]; then
@@ -69,8 +98,8 @@ with_lock() {
       sleep 0.1
     done
     printf '%s\n' "$self" > "$dir/pid" || return 1
-    guard_owned=false
-    rmdir "$dir.reap" || return 1
+    pid_written=true
+    _with_lock_release_guard || return 1
     "$@"; rc=$?
     return "$rc"
   )

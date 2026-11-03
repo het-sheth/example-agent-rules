@@ -2,6 +2,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO/lib/common.sh"
+real_cat="$(type -P cat)"
 command() {
   if [ "${1:-}" = -v ] && [ "${2:-}" = flock ]; then return 1; fi
   builtin command "$@"
@@ -15,12 +16,27 @@ wait_for() {
 }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 refuse_without_read() (
-  cat() { touch "$tmp/evidence-read"; return 1; }
+  cat() {
+    if [ "${1:-}" = "$lock.d/pid" ]; then touch "$tmp/evidence-read"; return 1; fi
+    "$real_cat" "$@"
+  }
   with_lock "$lock" touch "$tmp/evidence-entered"
 )
 if [ "${1:-}" = worker ]; then
   tmp="$2"; mode="$3"; lock="$tmp/install.lock"
   WITH_LOCK_TRIES=1
+  if [ "${FALLBACK_FALSE_MKDIR:-0}" = 1 ]; then
+    real_mkdir="$(type -P mkdir)"
+    mkdir() {
+      local status=0
+      "$real_mkdir" "$@" || status=$?
+      case "${1:-}" in
+        "$lock.d.reap")
+          if [ "$status" != 0 ] && [ -d "$1" ]; then return 0; fi ;;
+      esac
+      return "$status"
+    }
+  fi
   hold() { touch "$tmp/$mode-ready"; wait_for test -e "$tmp/release-$mode"; }
   case "$mode" in
     old|new) with_lock "$lock" hold ;;
@@ -64,6 +80,7 @@ fi
 tmp="$(mktemp -d)"
 trap 'touch "$tmp/release-old" "$tmp/release-new" "$tmp/release-read" "$tmp/release-nested"; wait 2>/dev/null || true; rm -rf "$tmp"' EXIT
 lock="$tmp/install.lock"; WITH_LOCK_TRIES=1
+fifo_timeout="$(builtin command -v timeout || builtin command -v gtimeout || true)"
 bash "$0" worker "$tmp" old & old=$!
 wait_for test -e "$tmp/old-ready"
 bash "$0" worker "$tmp" reaper & reaper=$!
@@ -107,6 +124,48 @@ mkdir "$lock.d.reap"
 if (with_lock "$lock" touch "$tmp/refused-entry"); then fail 'unknown recovery guard was stolen'; fi
 [ -d "$lock.d.reap" ] && [ ! -e "$lock.d" ]; rmdir "$lock.d.reap"
 printf 'PASS: live and unknown owners and recovery guards remain untouched\n'
+printf 'guard-sentinel\n' > "$tmp/guard-target"
+for artifact in regular fifo symlink dangling; do
+  case "$artifact" in
+    regular) printf 'guard-sentinel\n' > "$lock.d.reap" ;;
+    fifo) mkfifo "$lock.d.reap" ;;
+    symlink) ln -s "$tmp/guard-target" "$lock.d.reap" ;;
+    dangling) ln -s "$tmp/missing-target" "$lock.d.reap" ;;
+  esac
+  if [ -n "$fifo_timeout" ]; then
+    status=0; "$fifo_timeout" -k 1 2 bash "$0" worker "$tmp" evidence || status=$?
+    [ "$status" = 1 ] || fail "guard artifact did not refuse promptly ($artifact status=$status)"
+  elif [ "$artifact" != fifo ]; then
+    if (with_lock "$lock" touch "$tmp/evidence-entered"); then fail 'guard artifact was stolen'; fi
+  fi
+  [ ! -e "$tmp/evidence-entered" ] && [ ! -e "$lock.d" ] || fail 'guard artifact admitted a protected command'
+  case "$artifact" in
+    regular) [ "$(cat "$lock.d.reap")" = guard-sentinel ] || fail 'existing guard was truncated' ;;
+    fifo) [ -p "$lock.d.reap" ] || fail 'FIFO guard changed' ;;
+    symlink|dangling) [ -L "$lock.d.reap" ] || fail 'guard symlink changed' ;;
+  esac
+  [ "$(cat "$tmp/guard-target")" = guard-sentinel ] || fail 'guard symlink target changed'
+  rm "$lock.d.reap"
+done
+printf 'PASS: existing guard artifacts remain untouched and do not block inspection\n'
+mkdir "$lock.d"; printf '%s\n' "$$" > "$lock.d/pid"
+status=0
+(
+  main_mkdir="$(type -P mkdir)"
+  mkdir() {
+    local status=0
+    "$main_mkdir" "$@" || status=$?
+    if [ "${1:-}" = "$lock.d" ] && [ -d "$1" ]; then return 0; fi
+    return "$status"
+  }
+  with_lock "$lock" touch "$tmp/false-main-entered"
+) || status=$?
+[ "$status" = 1 ] && [ ! -e "$tmp/false-main-entered" ] \
+  && [ "$(cat "$lock.d/pid")" = "$$" ] || fail 'false-success mkdir stole a live main lock'
+rm "$lock.d/pid"; rmdir "$lock.d"
+printf 'PASS: false-success mkdir cannot claim a preexisting main lock\n'
+
+
 mkdir "$lock.d"; printf '%s\n' "$$" > "$lock.d/pid"
 if (
   kill() { return 1; }
@@ -131,7 +190,7 @@ for evidence in -O -r -x; do
   status=0
   (
     [() {
-      if builtin [ "$1" = "$evidence" ]; then return 1; fi
+      if builtin [ "$1" = "$evidence" ] && { builtin [ "${2:-}" = "$lock.d" ] || builtin [ "${2:-}" = "$lock.d/pid" ]; }; then return 1; fi
       builtin [ "$@"
     }
     refuse_without_read
@@ -143,7 +202,6 @@ for evidence in -O -r -x; do
 done
 printf 'PASS: foreign-owned or unreadable lock evidence is preserved\n'
 mkdir "$lock.d"; mkfifo "$lock.d/pid"
-fifo_timeout="$(builtin command -v timeout || builtin command -v gtimeout || true)"
 if [ -n "$fifo_timeout" ]; then
   status=0
   "$fifo_timeout" -k 1 2 bash "$0" worker "$tmp" evidence || status=$?
@@ -168,6 +226,58 @@ if refuse_without_read; then fail 'symlink owner evidence was recovered'; fi
 [ -L "$lock.d/pid" ] && [ "$(cat "$tmp/foreign-dir/pid")" = "$dead" ]
 rm "$lock.d/pid"; rmdir "$lock.d"
 printf 'PASS: symlink lock directories and owner evidence remain untouched\n'
+for replacement in regular fifo symlink directory; do
+  status=0
+  (
+    printf() {
+      builtin printf "$@"
+      if ${guard_owned:-false} && ${dir_owned:-false}; then
+        if [ -d "$dir.reap" ] && [ ! -L "$dir.reap" ]; then rmdir "$dir.reap"; else rm "$dir.reap"; fi
+        case "$replacement" in
+          regular) builtin printf 'substituted-guard\n' > "$dir.reap" ;;
+          fifo) mkfifo "$dir.reap" ;;
+          symlink) ln -s "$tmp/guard-target" "$dir.reap" ;;
+          directory) mkdir "$dir.reap" ;;
+        esac
+      fi
+    }
+    with_lock "$lock" touch "$tmp/retarget-entered"
+  ) || status=$?
+  [ "$status" = 1 ] && [ ! -e "$tmp/retarget-entered" ] || fail "substituted guard was accepted ($replacement)"
+  case "$replacement" in
+    regular) [ "$(cat "$lock.d.reap")" = substituted-guard ] || fail 'substituted guard was removed' ;;
+    fifo) [ -p "$lock.d.reap" ] || fail 'substituted FIFO guard was removed' ;;
+    symlink) [ -L "$lock.d.reap" ] || fail 'retargeted guard was removed' ;;
+    directory) [ -d "$lock.d.reap" ] || fail 'substituted guard directory was removed' ;;
+  esac
+  if [ "$replacement" = directory ]; then rmdir "$lock.d.reap"; else rm "$lock.d.reap"; fi
+done
+printf 'PASS: guard cleanup preserves substituted artifacts and reports failure\n'
+retarget_pid() {
+  rm "$lock.d/pid"
+  case "$replacement" in
+    regular) printf 'substituted-owner\n' > "$lock.d/pid" ;;
+    symlink) ln -s "$tmp/guard-target" "$lock.d/pid" ;;
+  esac
+}
+for replacement in regular symlink; do
+  status=0; with_lock "$lock" retarget_pid || status=$?
+  [ "$status" = 1 ] && [ -e "$lock.d/pid" ] \
+    && [ "$(cat "$tmp/guard-target")" = guard-sentinel ] || fail 'main cleanup removed substituted owner evidence'
+  if [ "$replacement" = regular ]; then
+    [ "$(cat "$lock.d/pid")" = substituted-owner ] || fail 'main cleanup changed substituted PID evidence'
+  else
+    [ -L "$lock.d/pid" ] || fail 'main cleanup removed retargeted PID evidence'
+  fi
+  rm "$lock.d/pid"; rmdir "$lock.d"
+done
+replacement=regular
+retarget_pid_error() { retarget_pid; return 23; }
+status=0; with_lock "$lock" retarget_pid_error || status=$?
+[ "$status" = 23 ] && [ "$(cat "$lock.d/pid")" = substituted-owner ] || fail 'cleanup refusal hid the protected command error'
+rm "$lock.d/pid"; rmdir "$lock.d"
+printf 'PASS: main cleanup preserves retargeted PID evidence and reports failure\n'
+
 status=0
 with_lock "$lock" bash -c 'exit 23' || status=$?
 [ "$status" = 23 ] && [ ! -e "$lock.d" ] && [ ! -e "$lock.d.reap" ]
@@ -196,3 +306,17 @@ touch "$tmp/release-nested"; wait "$nested"
 with_lock "$lock" touch "$tmp/parent-retry"
 [ -e "$tmp/parent-retry" ] && [ ! -e "$lock.d" ]
 printf 'PASS: child cache lock preserves waiting parent install lock\n'
+
+before_options="$-"
+with_lock "$lock" true
+[ "$before_options" = "$-" ] || fail 'claim changed parent shell options'
+(
+  set -C
+  with_lock "$lock" true
+  case "$-" in *C*) ;; *) fail 'claim disabled inherited noclobber' ;; esac
+)
+printf 'PASS: guard claims preserve parent and inherited noclobber options\n'
+if [ "${FALLBACK_FALSE_MKDIR:-0}" = 0 ]; then
+  FALLBACK_FALSE_MKDIR=1 bash "$0"
+  printf 'PASS: false-success mkdir cannot bypass fallback ownership\n'
+fi

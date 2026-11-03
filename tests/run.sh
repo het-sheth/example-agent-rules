@@ -411,12 +411,7 @@ main() {
   test_prune_bounds_legacy_skill_ownership
   test_prune_preserves_other_manifest_artifacts
   test_install_preserves_retargeted_dangling_links
-  local -a fallback_runner=(bash)
-  if [ -n "${FALLBACK_LOCK_SYSCALL_DIR:-}" ]; then
-    fallback_runner=(strace -ff -ttt -s 160 -o "$FALLBACK_LOCK_SYSCALL_DIR/fallback"
-      -e trace=%process,mkdir,mkdirat,rmdir,unlink,unlinkat bash)
-  fi
-  if "${fallback_runner[@]}" "$REPO/tests/fallback-lock.test.sh"; then pass "Fallback lock suite"
+  if bash "$REPO/tests/fallback-lock.test.sh"; then pass "Fallback lock suite"
   else fail "Fallback lock suite"; fi
 
   if bash "$REPO/tests/codex-skills-migration.test.sh"; then pass "Codex migration suite"

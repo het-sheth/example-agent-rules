@@ -87,61 +87,8 @@ jobs:
           done
           exit $fail
 
-      - name: Diagnose fallback syscalls in full suite
-        run: |
-          for utility in bash mkdir rmdir; do
-            utility_path=$(command -v "$utility")
-            printf 'Utility: %s path=%s resolved=' "$utility" "$utility_path"
-            readlink -f "$utility_path"
-            "$utility" --version
-          done
-          probe_status=0
-          python3 - <<'PY_PROBE' || probe_status=$?
-          from concurrent.futures import ThreadPoolExecutor
-          import json
-          from pathlib import Path
-          import shutil
-          import subprocess
-          import tempfile
-          from threading import Barrier
-
-          utility_path = shutil.which('mkdir')
-          utility = str(Path(utility_path).resolve())
-          root = Path(tempfile.mkdtemp(prefix='concurrent-mkdir-'))
-          failed = False
-          with ThreadPoolExecutor(max_workers=16) as pool:
-              for round_number in range(1, 21):
-                  target = root / f'round-{round_number}'
-                  barrier = Barrier(16)
-                  def attempt(_):
-                      barrier.wait()
-                      result = subprocess.run([utility_path, str(target)], executable=utility, capture_output=True, text=True)
-                      return {'status': result.returncode, 'stderr': result.stderr}
-                  results = list(pool.map(attempt, range(16)))
-                  successes = sum(item['status'] == 0 for item in results)
-                  evidence = {'round': round_number, 'utility': utility, 'argv0': utility_path, 'successes': successes, 'results': results}
-                  (root / f'round-{round_number}.json').write_text(json.dumps(evidence))
-                  print(f'concurrent-mkdir round={round_number} successes={successes} expected=1', flush=True)
-                  if successes != 1:
-                      failed = True
-                      print(json.dumps(evidence), flush=True)
-          if failed:
-              print(f'concurrent-mkdir preserved-evidence={root}', flush=True)
-          else:
-              shutil.rmtree(root)
-          raise SystemExit(1 if failed else 0)
-          PY_PROBE
-          command -v strace
-          strace --version
-          trace_dir=$(mktemp -d)
-          status=0
-          FALLBACK_LOCK_SYSCALL_DIR="$trace_dir" bash tests/run.sh || status=$?
-          for trace in "$trace_dir"/fallback.*; do
-            printf '\nSyscall trace: %s\n' "$trace"
-            cat "$trace"
-          done
-          [ "$status" = 0 ] || exit "$status"
-          exit "$probe_status"
+      - name: Run installer behavioral tests
+        run: bash tests/run.sh
 
       # The installer's core promise is that --dry-run touches nothing. Verify it against a
       # throwaway HOME, then confirm the repo itself is unmodified (no _machine.md seeded).
