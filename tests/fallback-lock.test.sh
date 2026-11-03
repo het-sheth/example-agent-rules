@@ -14,12 +14,17 @@ wait_for() {
   done
 }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+refuse_without_read() (
+  cat() { touch "$tmp/evidence-read"; return 1; }
+  with_lock "$lock" touch "$tmp/evidence-entered"
+)
 if [ "${1:-}" = worker ]; then
   tmp="$2"; mode="$3"; lock="$tmp/install.lock"
   WITH_LOCK_TRIES=1
   hold() { touch "$tmp/$mode-ready"; wait_for test -e "$tmp/release-$mode"; }
   case "$mode" in
     old|new) with_lock "$lock" hold ;;
+    evidence) with_lock "$lock" touch "$tmp/evidence-entered" ;;
     reaper)
       cat() {
         local observed
@@ -121,7 +126,7 @@ for inspection in unavailable empty malformed missing-self; do
   rm "$lock.d/pid"; rmdir "$lock.d"
 done
 printf 'PASS: inaccessible live owners and ambiguous process inspection refuse recovery\n'
-for evidence in -O -r; do
+for evidence in -O -r -x; do
   mkdir "$lock.d"; printf '%s\n' "$dead" > "$lock.d/pid"
   status=0
   (
@@ -129,19 +134,37 @@ for evidence in -O -r; do
       if builtin [ "$1" = "$evidence" ]; then return 1; fi
       builtin [ "$@"
     }
-    with_lock "$lock" touch "$tmp/foreign-entry"
+    refuse_without_read
   ) || status=$?
   [ "$status" = 1 ] || fail 'foreign-owned or unreadable evidence was recovered'
-  [ ! -e "$tmp/foreign-entry" ] && [ "$(cat "$lock.d/pid")" = "$dead" ]
+  [ ! -e "$tmp/evidence-read" ] && [ ! -e "$tmp/evidence-entered" ] \
+    && [ "$(cat "$lock.d/pid")" = "$dead" ] || fail 'unsafe owner evidence was read or modified'
   rm "$lock.d/pid"; rmdir "$lock.d"
 done
 printf 'PASS: foreign-owned or unreadable lock evidence is preserved\n'
+mkdir "$lock.d"; mkfifo "$lock.d/pid"
+fifo_timeout="$(builtin command -v timeout || builtin command -v gtimeout || true)"
+if [ -n "$fifo_timeout" ]; then
+  status=0
+  "$fifo_timeout" -k 1 2 bash "$0" worker "$tmp" evidence || status=$?
+  [ "$status" = 1 ] || fail "FIFO owner inspection did not refuse within budget (status=$status)"
+else
+  printf 'SKIP: timeout unavailable; FIFO no-read assertion still runs\n'
+fi
+if refuse_without_read; then fail 'FIFO owner evidence was accepted'; fi
+[ -p "$lock.d/pid" ] && [ ! -e "$tmp/evidence-read" ] \
+  && [ ! -e "$tmp/evidence-entered" ] && [ ! -e "$lock.d.reap" ] || fail 'FIFO evidence was read or changed'
+rm "$lock.d/pid"; rmdir "$lock.d"
+printf 'PASS: FIFO owner evidence is refused without reading or waiting for a writer\n'
+
 mkdir "$tmp/foreign-dir"; printf '%s\n' "$dead" > "$tmp/foreign-dir/pid"
 ln -s "$tmp/foreign-dir" "$lock.d"
-if (with_lock "$lock" true); then fail 'symlink lock directory was recovered'; fi
+if refuse_without_read; then fail 'symlink lock directory was recovered'; fi
+[ ! -e "$tmp/evidence-read" ] && [ ! -e "$tmp/evidence-entered" ] || fail 'symlink evidence was read'
 [ -L "$lock.d" ] && [ "$(cat "$tmp/foreign-dir/pid")" = "$dead" ]; rm "$lock.d"
 mkdir "$lock.d"; ln -s "$tmp/foreign-dir/pid" "$lock.d/pid"
-if (with_lock "$lock" true); then fail 'symlink owner evidence was recovered'; fi
+if refuse_without_read; then fail 'symlink owner evidence was recovered'; fi
+[ ! -e "$tmp/evidence-read" ] && [ ! -e "$tmp/evidence-entered" ] || fail 'symlink evidence was read'
 [ -L "$lock.d/pid" ] && [ "$(cat "$tmp/foreign-dir/pid")" = "$dead" ]
 rm "$lock.d/pid"; rmdir "$lock.d"
 printf 'PASS: symlink lock directories and owner evidence remain untouched\n'

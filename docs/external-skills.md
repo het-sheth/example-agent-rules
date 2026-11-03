@@ -72,7 +72,8 @@ read or changed by this library.
 Without `flock`, acquisition and stale-owner recovery share a `.d.reap` directory guard,
 held through PID publication. A replacement cannot acquire while recovery inspects the old
 owner. Recovery requires an ordinary, readable lock directory and PID file owned by the
-current user, a positive numeric PID, failed `kill -0`, and successful PID-only `ps -e`
+current user. Unsafe evidence is rejected before opening the PID file, including FIFOs.
+Recovery also requires a positive numeric PID, failed `kill -0`, and successful PID-only `ps -e`
 inspection containing the current lock subprocess but no recorded owner. This relies on
 visibility of this user's processes. Visible, inaccessible or unknown owners, malformed or
 unavailable inspection, symlinks and interrupted recovery guards are refused. Ordinary

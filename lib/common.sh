@@ -28,7 +28,11 @@ with_lock() {
         if mkdir "$dir" 2>/dev/null; then dir_owned=true; break; fi
         tries=$((tries + 1))
         if [ "$tries" -ge "$max" ]; then
-          holder="$(cat "$dir/pid" 2>/dev/null)" || holder=''
+          holder=''
+          if [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] \
+            && [ -f "$dir/pid" ] && [ ! -L "$dir/pid" ] && [ -O "$dir/pid" ] && [ -r "$dir/pid" ]; then
+            holder="$(cat "$dir/pid" 2>/dev/null)" || holder=''
+          fi
           if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
             guard_owned=false
             rmdir "$dir.reap" || return 1
