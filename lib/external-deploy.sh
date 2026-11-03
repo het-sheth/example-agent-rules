@@ -67,9 +67,16 @@ _external_deploy_plan() {
   done
 }
 
+_external_deploy_link_matches() {
+  local actual
+  [ -L "$1" ] || return 1
+  actual="$(readlink "$1" && printf '.')" || return 1
+  [ "$actual" = "$2"$'\n.' ]
+}
+
 _external_deploy_owned() {
   local path="$1" target="$2" line matches=0 valid=false
-  [ -L "$path" ] && [ "$(readlink "$path")" = "$target" ] && [ -f "$MANIFEST" ] || return 1
+  [ -f "$MANIFEST" ] && _external_deploy_link_matches "$path" "$target" || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     _manifest_parse "$line"
     [ "$_mf_path" = "$path" ] || continue
@@ -139,7 +146,7 @@ _external_deploy_apply() {
   done
   for ((i=0; i<${#_ed_want_paths[@]}; i++)); do
     path="${_ed_want_paths[i]}"; target="${_ed_want_targets[i]}"
-    if [ ! -L "$path" ] || [ "$(readlink "$path")" != "$target" ]; then
+    if ! _external_deploy_link_matches "$path" "$target"; then
       for ((j=0; j<${#_ed_all[@]}; j++)); do [ "${_ed_all[j]}" != "$path" ] || _ed_touched[j]=true; done
       if [ -e "$path" ] || [ -L "$path" ]; then _external_deploy_backup "$path" || return 1; fi
       _external_deploy_mkdir "$(dirname "$path")" || return 1
@@ -163,7 +170,7 @@ external_deploy_all() {
   local _ed_agents=() _ed_names=() _ed_paths=() _ed_targets=()
   _external_deploy_plan "$repo" "$plan" || return 1
   local _ed_want_paths=("${_ed_paths[@]}") _ed_want_targets=("${_ed_targets[@]}")
-  local _ed_old_paths=() _ed_old_targets=() _ed_old_rows=() _ed_lost_paths=() _ed_lost_rows=()
+  local _ed_old_paths=() _ed_old_targets=() _ed_old_rows=() _ed_lost_paths=() _ed_lost_rows=() _ed_lost_targets=()
   local _ed_metadata=("$MANIFEST" "$state/external-installed.tsv" "$state/external-relinquished.tsv")
   local _ed_staged=(manifest installed relinquished) _ed_all=("${_ed_paths[@]}") _ed_keys=()
   local _ed_dirs=() _ed_backups=() _ed_touched=() _ed_txn
@@ -189,6 +196,7 @@ external_deploy_all() {
     _external_deploy_read "${_ed_metadata[2]}" || return 1
     for ((i=0; i<${#_ed_paths[@]}; i++)); do
       path="${_ed_paths[i]}"
+      _ed_lost_targets+=("${_ed_targets[i]}")
       [ -e "$path" ] || [ -L "$path" ] || continue
       printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "$path" "${_ed_targets[i]}"
       _ed_lost_paths+=("$path") _ed_lost_rows+=("$line")
@@ -219,7 +227,7 @@ external_deploy_all() {
       case "$other/" in "$key/"*) warn 'overlapping external metadata'; return 1 ;; esac
     done
     layout_keys+=("$key")
-    for other in "${_ed_want_targets[@]}" "${_ed_old_targets[@]}"; do
+    for other in "${_ed_want_targets[@]}" "${_ed_old_targets[@]}" "${_ed_lost_targets[@]}"; do
       if [ -d "$other" ]; then other="$(cd -P "$other" && pwd)" || return 1
       else other="$(_external_deploy_location "$other")" || { warn 'invalid prior source layout'; return 1; }; fi
       case "$key/" in "$other/"*) warn 'external metadata overlaps prepared source'; return 1 ;; esac
@@ -233,7 +241,7 @@ external_deploy_all() {
       case "$other/" in "$key/"*) warn 'overlapping deployment history'; return 1 ;; esac
     done
     _ed_keys+=("$key")
-    for other in "${_ed_metadata[@]}" "$BACKUP" "${_ed_want_targets[@]}" "${_ed_old_targets[@]}"; do
+    for other in "${_ed_metadata[@]}" "$BACKUP" "${_ed_want_targets[@]}" "${_ed_old_targets[@]}" "${_ed_lost_targets[@]}"; do
       if [ -d "$other" ]; then other="$(cd -P "$other" && pwd)" || return 1
       else other="$(_external_deploy_location "$other")" || { warn 'invalid deployment layout'; return 1; }; fi
       case "$other/" in "$key/"*) warn 'deployment overlaps source or state'; return 1 ;; esac

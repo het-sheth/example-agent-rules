@@ -70,7 +70,7 @@ printf '%s deployment assertions passed\n' "$PASS"
 INSTALLED="$XDG_STATE_HOME/agent-rules/external-installed.tsv"
 RELINQUISHED="$XDG_STATE_HOME/agent-rules/external-relinquished.tsv"
 both() { row claude "$CLAUDE" > "$PLAN"; row codex "$CODEX" >> "$PLAN"; }
-link_is() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
+link_is() { [ -L "$1" ] && readlink "$1" | cmp -s - <(printf '%s\n' "$2"); }
 reject external_deploy_all "$RULES" "$PLAN"
 [ ! -e "$XDG_STATE_HOME" ]
 ok 'caller must establish installation-lock state before deployment'
@@ -102,13 +102,22 @@ external_deploy_all "$RULES" "$PLAN"
 [ ! -L "$CLAUDE" ] && [ ! -s "$INSTALLED" ] && [ ! -s "$MANIFEST" ] || exit 1
 ok 'scope narrowing and empty disabled selection remove owned links with live sources'
 mv "$RULES/skills/claude-only.list" "$RULES/skills/external.list"
-for kind in live broken file; do
+ln -s "$ROOT/cache/demo"$'\n\n' "$CLAUDE"
+both
+external_deploy_all "$RULES" "$PLAN"
+link_is "$CLAUDE" "$ROOT/cache/demo"
+link_is "$(find "$BACKUP" -type l)" "$ROOT/cache/demo"$'\n\n'
+: > "$PLAN"
+external_deploy_all "$RULES" "$PLAN"
+ok 'unowned newline-suffixed links are backed up and replaced with the exact desired target'
+for kind in live broken file newline; do
   both
   external_deploy_all "$RULES" "$PLAN"
   rm "$CLAUDE"
   case "$kind" in
     live) ln -s "$ROOT/cache/demo" "$ROOT/user-target"; ln -s "$ROOT/user-target" "$CLAUDE" ;;
     broken) ln -s "$ROOT/missing" "$CLAUDE" ;;
+    newline) ln -s "$ROOT/cache/demo"$'\n\n' "$CLAUDE" ;;
     file) printf 'user content\n' > "$CLAUDE" ;;
   esac
   cp -a "$CLAUDE" "$ROOT/preserved"
@@ -117,14 +126,16 @@ for kind in live broken file; do
   external_deploy_all "$RULES" "$PLAN"
   [ ! -s "$MANIFEST" ] && [ ! -s "$INSTALLED" ] && [ -s "$RELINQUISHED" ] || exit 1
   if [ "$kind" = file ]; then cmp -s "$CLAUDE" "$ROOT/preserved"
-  else link_is "$CLAUDE" "$(readlink "$ROOT/preserved")"; fi
+  else readlink "$CLAUDE" > "$ROOT/actual-target"; readlink "$ROOT/preserved" > "$ROOT/expected-target"
+    cmp -s "$ROOT/actual-target" "$ROOT/expected-target"; fi
+  grep -Fqx "$(row claude "$CLAUDE")" "$RELINQUISHED"
   both
   reject external_deploy_all "$RULES" "$PLAN"
   rm "$CLAUDE" "$ROOT/preserved"
   external_deploy_all "$RULES" "$PLAN"
   [ ! -s "$RELINQUISHED" ]
 done
-ok 'live links, broken links and regular substitutions survive cleanup and later selection'
+ok 'live, broken, newline-retargeted links and files survive cleanup and later selection'
 : > "$PLAN"
 external_deploy_all "$RULES" "$PLAN"
 printf 'foreign file\n' > "$CLAUDE"
@@ -200,6 +211,47 @@ rm -r "$CLAUDE"
 printf 'displaced\n' > "$CLAUDE"
 both
 ok 'physical source aliases inside a displaced destination are refused before mutation'
+
+(
+  fixture="$ROOT/retained-fixture"
+  export HOME="$fixture/home" XDG_STATE_HOME="$fixture/state"
+  MANIFEST="$XDG_STATE_HOME/agent-rules/links"
+  BACKUP="$fixture/backups"
+  INSTALLED="$XDG_STATE_HOME/agent-rules/external-installed.tsv"
+  RELINQUISHED="$XDG_STATE_HOME/agent-rules/external-relinquished.tsv"
+  PLAN="$fixture/desired.tsv"
+  CLAUDE="$HOME/.claude/skills/demo"
+  CODEX="$HOME/.agents/skills/demo"
+  old_source="$fixture/cache/old"
+  new_source="$fixture/cache/new"
+  mkdir -p "$(dirname "$MANIFEST")" "$old_source" "$new_source"
+  printf 'retained source bytes\n' > "$old_source/SKILL.md"
+  printf 'new source bytes\n' > "$new_source/SKILL.md"
+  row claude "$CLAUDE" "$old_source" > "$PLAN"
+  external_deploy_all "$RULES" "$PLAN"
+  rm "$CLAUDE"
+  printf 'preserved user artifact\n' > "$CLAUDE"
+  : > "$PLAN"
+  external_deploy_all "$RULES" "$PLAN"
+  [ ! -s "$INSTALLED" ] && [ -s "$RELINQUISHED" ] || exit 1
+  for overlap in metadata backup destination; do
+    (
+      case "$overlap" in
+        metadata) MANIFEST="$old_source/SKILL.md" ;;
+        backup) BACKUP="$old_source/backups"
+          mkdir -p "$(dirname "$CODEX")"; printf 'foreign collision\n' > "$CODEX" ;;
+        destination) CODEX="$old_source/demo"
+          skills_dest_for() { printf '%s\n' "$old_source"; } ;;
+      esac
+      row codex "$CODEX" "$new_source" > "$PLAN"
+      tar -cf "$ROOT/retained-before.tar" -C "$fixture" .
+      reject external_deploy_all "$RULES" "$PLAN"
+      tar -cf "$ROOT/retained-after.tar" -C "$fixture" .
+      cmp -s "$ROOT/retained-before.tar" "$ROOT/retained-after.tar"
+    )
+  done
+)
+ok 'tombstone-only source targets block metadata, backup and destination mutation'
 
 ln() { if [ "${*: -1}" = "$CODEX" ]; then return 1; fi; command ln "$@"; }
 cp() { case "$1:$2" in -a:*/paths/*) return 1 ;; esac; command cp "$@"; }
