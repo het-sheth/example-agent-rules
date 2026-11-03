@@ -261,4 +261,39 @@ require run
 require test "$(cat "$HOME/.claude/skills/root/SKILL.md")" = 'source root'
 readonly_run pass check
 ok 'source-root selections share valid paths in dry-run, installation and offline check'
+fresh failed-sort
+select_source "$FIRST"
+require run
+: > "$BOOK/skills/external.list"
+: > "$BOOK/skills/claude-only.list"
+readonly_run fail check
+mkdir "$CASE/bin"
+printf '#!/usr/bin/env bash\nexit 23\n' > "$CASE/bin/sort"
+chmod +x "$CASE/bin/sort"
+PATH="$CASE/bin:$PATH" readonly_run fail check
+ok 'failed selection sorting cannot turn stale installed state into a passing read-only check'
+for unused in xdg-space override-space override-relative; do
+  fresh "$unused"
+  select_source "$FIRST"
+  require run
+  printf 'malformed catalog\n' > "$BOOK/skills/external.list"
+  case "$unused" in
+    xdg-space) export XDG_CACHE_HOME="$CASE/unused cache" ;;
+    override-space) export AGENT_RULES_SKILL_CACHE="$CASE/unused cache" ;;
+    override-relative) export AGENT_RULES_SKILL_CACHE=relative ;;
+  esac
+  TEST_PROFILE=work readonly_run fail check
+  require grep -Fq 'external installed selection differs' "$CASE/output"
+  TEST_PROFILE=work readonly_run pass --dry-run
+  TEST_PROFILE=work require run
+  require absent "$CLAUDE"
+  require absent "$CODEX"
+  require test ! -s "$INSTALLED"
+  TEST_PROFILE=work readonly_run pass check
+  TEST_PROFILE=work readonly_run pass --dry-run
+  require absent "$CASE/unused cache"
+  readonly_run fail --dry-run
+  require grep -Fq 'external cache must be an absolute path without whitespace' "$CASE/output"
+done
+ok 'disabled install, check and dry-run ignore unused invalid caches while enabled caches remain restricted'
 printf '%s integration assertions passed\n' "$PASS"

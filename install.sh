@@ -31,8 +31,8 @@ DRY=false
 
 # ------------------------------------------------------------------ check ---
 do_check() {
-  local fail=0 cache
-  cache="$(external_skill_cache)" || return 1
+  local fail=0 cache=''
+  if sync_enabled skills; then cache="$(external_skill_cache)" || return 1; fi
   echo "PROFILE: $PROFILE"
   report_adapter_state "$REPO"
   echo "WIRING:"
@@ -77,8 +77,8 @@ do_check() {
 
 # ---------------------------------------------------------------- install ---
 do_install() {
-  local cache
-  cache="$(external_skill_cache)" || return 1
+  local cache=''
+  if sync_enabled skills; then cache="$(external_skill_cache)" || return 1; fi
   if $DRY; then
     echo "install (DRY RUN — nothing will change)"
   else

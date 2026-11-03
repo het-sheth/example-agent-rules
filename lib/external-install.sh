@@ -84,7 +84,7 @@ install_external_skills_all() {
 # Verify selection, sources and ownership offline. No preparation, deployment or temporary files.
 check_external_skills_all() {
   local repo="$1" cache="$2" state="${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules"
-  local desired installed='' file path target line i bad=0
+  local desired installed='' sorted_desired sorted_installed file path target line i bad=0
   local _ed_agents=() _ed_names=() _ed_paths=() _ed_targets=()
   _external_skills_recovery "$state" || bad=1
   desired="$(external_skills_plan "$repo" "$cache")" || {
@@ -107,7 +107,13 @@ check_external_skills_all() {
       fi
     done
   fi
-  if ! cmp -s <(printf '%s' "$desired" | LC_ALL=C sort) <(printf '%s' "$installed" | LC_ALL=C sort); then
+  sorted_desired="$(LC_ALL=C sort <<< "$desired")" || {
+    echo 'FAIL: cannot sort desired external selection'; return 1;
+  }
+  sorted_installed="$(LC_ALL=C sort <<< "$installed")" || {
+    echo 'FAIL: cannot sort installed external selection'; return 1;
+  }
+  if [ "$sorted_desired" != "$sorted_installed" ]; then
     echo 'FAIL: external installed selection differs from current selection; run install.sh'
     bad=1
   fi
@@ -123,7 +129,7 @@ check_external_skills_all() {
       bad=1
     done
   fi
-  if [ -f "$MANIFEST" ]; then
+  if [ -n "$cache" ] && [ -f "$MANIFEST" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       _manifest_parse "$line"
       [ "$_mf_kind" = link ] || continue
