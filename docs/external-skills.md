@@ -70,5 +70,47 @@ read or changed by this library.
 To advance a lock, review the chosen source commit and selected skill paths, update the full
 SHA manually, then validate and prepare it against a test cache. Review the catalog and lock
 diff together. Retain old cache entries for rollback; restoring an old catalog and lock can
-reuse them offline. Destination deployment and transactional rollback are later integration
-work, so source preparation alone does not change any installed skill.
+reuse them offline. Source preparation alone does not change any installed skill. Deployment
+uses the separate transaction below; ordinary installer integration remains deferred.
+
+## External deployment library
+
+Source `lib/manifest.sh` and the source-library dependencies before `lib/external-deploy.sh`.
+`external_deploy_all repo desired_tsv` takes a **file path** containing the complete desired
+set for both agents. Each no-header TSV row is `(agent, name, absolute destination, expected
+absolute target)`. Empty input reconciles to no external skills without parsing disabled
+catalogs. Nonempty input validates catalog applicability, destination resolvers and existing
+source directories with `SKILL.md`. Names and paths cannot contain whitespace or control bytes.
+Destinations, state, backup locations and prepared sources must not overlap physically.
+No source cache is fetched, edited or removed. Ordinary install/check wiring remains deferred.
+
+The caller must create the per-machine state directory and hold the install lock throughout
+this call. This library does not acquire a nested lock, infer agent selection or provide a
+dry-run mode. Pass the already resolved complete selection once, including an empty selection
+for profile disablement. Source preparation must finish before deployment starts.
+
+State lives under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-rules/`:
+
+- `external-installed.tsv` is the complete desired set from the last successful deployment.
+- `external-relinquished.tsv` uses the same four-column schema to retain conflict evidence for
+  previously managed destinations now occupied by user artifacts. While occupied, these paths
+  cannot be selected again. Removing the artifact permits a successful deployment to clear
+  that record. Empty files are valid state. Downstream snapshots must include both files.
+
+Removal requires agreement between prior selection, one typed manifest link record and the
+current link target. Retargeted live/broken links and substituted files survive cleanup, and
+stale manifest ownership is dropped. Other destination collisions receive the public
+`BACKUP/name.pre-install.TIMESTAMP[.N]` backup policy, including directories. All agents share
+one transaction. Plan errors return 1 before mutation. Reported deployment failure returns 1
+after restoring touched artifacts, backup displacements and exact prior metadata bytes or
+absence. Return 2 means recovery or cleanup needs inspection; never treat it as success.
+
+A `.external-deploy.*` state directory holds indexed `paths/` snapshots, `paths.tsv` mappings,
+`backups.tsv` moves and `directories.tsv` newly created parents. The path mapping columns are
+`index`, `present|absent`, and `original path`. A `snapshots-complete` marker confirms that all
+originals were captured before mutation. Without it, staging did not reach deployment; do not
+infer original absence from missing snapshot files. Failed compensation retains evidence and blocks
+retries. Inspect it while holding the install lock, restore the recorded original paths and
+metadata, and remove the evidence only after verifying recovery. An interrupted live deployment
+also requires that inspection. This provides compensation for reported failures, not atomicity
+across arbitrary process death. Cache entries remain available for later offline rollback.
