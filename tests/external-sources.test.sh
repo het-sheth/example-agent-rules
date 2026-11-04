@@ -127,6 +127,11 @@ mkdir "$ROOT/bin"
 cat > "$ROOT/bin/git" <<'WRAPPER'
 #!/usr/bin/env bash
 set -eu
+if [ "${ORIGIN_QUERY_FAIL:-0}" = 1 ] \
+  && [ "${*: -5}" = 'config --local --no-includes --get-all remote.origin.url' ]; then
+  "$REAL_GIT" "$@"
+  exit 73
+fi
 for arg in "$@"; do
   if [ "$arg" = fetch ]; then
     printf '%s\n' "$*" >> "$FETCH_LOG"
@@ -146,6 +151,46 @@ export FETCH_MODE=offline
 external_skills_prepare "$RULES" "$CACHE" > "$ROOT/reused"
 cmp "$ROOT/prepared" "$ROOT/reused"
 [ ! -s "$FETCH_LOG" ]
+reject_cache_origin() {
+  tar --format=ustar -cf "$ROOT/cache-before.tar" -C "$ENTRY_A" .
+  if external_skills_prepare "$RULES" "$CACHE" > "$ROOT/out" 2> "$ROOT/err"; then
+    printf 'FAIL: accepted invalid origin: %s\n' "$1"; exit 1
+  fi
+  [ ! -s "$ROOT/out" ]
+  tar --format=ustar -cf "$ROOT/cache-after.tar" -C "$ENTRY_A" .
+  cmp "$ROOT/cache-before.tar" "$ROOT/cache-after.tar"
+}
+cp "$ENTRY_A/.git/config" "$ROOT/origin-config"
+for origin_case in trailing-lf duplicate duplicate-empty empty-duplicate empty empty-empty missing raw-nul; do
+  cp "$ROOT/origin-config" "$ENTRY_A/.git/config"
+  case "$origin_case" in
+    trailing-lf) git -C "$ENTRY_A" config remote.origin.url "$URL_A"$'\n\n' ;;
+    duplicate) git -C "$ENTRY_A" config --add remote.origin.url "$URL_A" ;;
+    duplicate-empty) git -C "$ENTRY_A" config --add remote.origin.url '' ;;
+    empty-duplicate)
+      git -C "$ENTRY_A" config remote.origin.url ''
+      git -C "$ENTRY_A" config --add remote.origin.url "$URL_A"
+      ;;
+    empty) git -C "$ENTRY_A" config remote.origin.url '' ;;
+    empty-empty)
+      git -C "$ENTRY_A" config remote.origin.url ''
+      git -C "$ENTRY_A" config --add remote.origin.url ''
+      ;;
+    missing) git -C "$ENTRY_A" config --unset-all remote.origin.url ;;
+    raw-nul)
+      git -C "$ENTRY_A" config --unset-all remote.origin.url
+      printf '\turl = %s\000suffix\n' "$URL_A" >> "$ENTRY_A/.git/config"
+      ;;
+  esac
+  reject_cache_origin "$origin_case"
+  ok "invalid $origin_case origin is refused without changing cache evidence"
+done
+cp "$ROOT/origin-config" "$ENTRY_A/.git/config"
+ORIGIN_QUERY_FAIL=1 reject_cache_origin failed-query
+external_skills_prepare "$RULES" "$CACHE" > "$ROOT/reused"
+cmp "$ROOT/prepared" "$ROOT/reused"
+[ ! -s "$FETCH_LOG" ]
+ok 'failed origin query with valid stdout refuses reuse and a single exact origin still succeeds offline'
 printf 'dirty\n' >> "$ALPHA/SKILL.md"
 reject external_skills_prepare "$RULES" "$CACHE"
 grep -q dirty "$ALPHA/SKILL.md"

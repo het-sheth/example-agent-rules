@@ -173,6 +173,7 @@ _external_cache_config_safe() {
   local entry="$1" keys name
   [ -f "$entry/.git/config" ] && [ ! -L "$entry/.git/config" ] \
     || { warn 'external cache config is missing or a symlink'; return 1; }
+  _external_text_safe "$entry/.git/config" || return 1
   keys="$(_external_git config --file "$entry/.git/config" --no-includes --name-only --list)" || return 1
   while IFS= read -r name; do
     case "$name" in
@@ -190,9 +191,9 @@ _external_verify_entry() {
     || { warn "invalid external cache directory: $entry"; return 1; }
   _external_cache_config_safe "$entry" || return 1
   top="$(_external_git -C "$entry" rev-parse --show-toplevel)" || return 1
-  origin="$(_external_git -C "$entry" config --local --no-includes --get-all remote.origin.url)" || return 1
+  origin="$(_external_git -C "$entry" config --local --no-includes --get-all remote.origin.url && printf '.')" || return 1
   actual="$(_external_git -C "$entry" rev-parse --verify 'HEAD^{commit}')" || return 1
-  [ "$top" = "$entry" ] && [ "$origin" = "$url" ] && [ "$actual" = "$revision" ] \
+  [ "$top" = "$entry" ] && [ "$origin" = "$url"$'\n.' ] && [ "$actual" = "$revision" ] \
     || { warn "external cache origin or revision mismatch: $entry"; return 1; }
   flags="$(_external_git -C "$entry" ls-files -v)" || return 1
   case "$flags" in [a-zS]\ *|*$'\n'[a-zS]\ *)
