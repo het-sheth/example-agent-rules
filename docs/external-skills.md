@@ -69,6 +69,35 @@ lock helper opens fd 9; the waiting parent must retain its installation lock. Th
 serializes separate state directories that share a cache. No manifest or deployment state is
 read or changed by this library.
 
+Without `flock`, acquisition and stale-owner recovery share a regular `.d.reap` PID guard,
+claimed with Bash noclobber file creation and held through main-lock PID publication.
+This avoids depending on external `mkdir` exit status for mutual exclusion: affected
+[uutils mkdir versions can report success after EEXIST](https://github.com/uutils/coreutils/issues/13970).
+A replacement cannot acquire while recovery inspects the old owner. Any existing guard path,
+including a FIFO, symlink or legacy directory guard, is refused before opening it. The claim
+subshell preserves the caller's shell options and does not truncate existing guard files.
+
+Recovery requires an ordinary, readable lock directory and PID file owned by the current user.
+Unsafe evidence is rejected before opening the PID file, including FIFOs. Recovery also requires
+a positive numeric PID, failed `kill -0`, and successful PID-only `ps -e` inspection containing
+the current lock subprocess but no recorded owner. This relies on visibility of this user's
+processes. Visible, inaccessible or unknown owners and malformed or unavailable inspection
+are refused. Owned cleanup verifies ordinary, non-symlink PID evidence matching this subprocess.
+Substituted or retargeted evidence is preserved. Refused cleanup makes an otherwise successful
+call fail; an existing protected-command error keeps its original status.
+
+An interrupted or failed claim can leave `.d.reap` behind. Inspect and remove it manually only
+after confirming no acquisition or recovery is running. Unknown main-lock evidence also requires
+manual inspection. This is a cooperative same-user protocol whose contenders create only regular
+guard files; the absent-path check and noclobber claim do not promise resistance to hostile
+pathname changes. All participants sharing a lock must use the fixed protocol; replace older
+helpers only while no installation or preparation is running.
+
+The fallback runs the protected command in a child subshell; the `flock` path retains fd 9 in
+its caller. Source-cache consumers must pin a revision containing the complete recovery and
+noclobber guard protocol. The earlier PID-read-then-delete helper does not provide safe fallback
+cache serialization.
+
 To advance a lock, review the chosen source commit and selected skill paths, update the full
 SHA manually, then validate and prepare it against a test cache. Review the catalog and lock
 diff together. Retain old cache entries for rollback; restoring an old catalog and lock can
