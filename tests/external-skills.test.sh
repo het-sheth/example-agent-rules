@@ -321,4 +321,97 @@ printf 'local skill\n' > "$BOOK/skills/local/SKILL.md"
 require run
 TEST_PROFILE=work readonly_run pass check
 ok 'disabled orphan scan preserves existing handling of exact local skill targets, rule links and tracked copies'
+run_evidence() {
+  PROFILE=work bash -c '. "$1/install.sh"; shift; "$@"' _ "$BOOK" "$@" > "$CASE/output" 2>&1
+}
+blocked_evidence() {
+  local blocked="$1" status=0
+  shift
+  chmod 700 "$blocked"
+  tar -cf "$ROOT/evidence-before.tar" --exclude=./output -C "$CASE" .
+  chmod 000 "$blocked"
+  "$@" || status=$?
+  chmod 700 "$blocked"
+  tar -cf "$ROOT/evidence-after.tar" --exclude=./output -C "$CASE" .
+  require cmp -s "$ROOT/evidence-before.tar" "$ROOT/evidence-after.tar"
+  require test "$status" -ne 0
+  BLOCKED_STATUS="$status"
+}
+fresh hidden-state
+export MANIFEST="$CASE/independent-manifest/links"
+TEST_PROFILE=work require run
+printf 'claude\tstale\t%s\t%s\n' "$HOME/.claude/skills/stale" "$CASE/former-source" > "$INSTALLED"
+TEST_PROFILE=work readonly_run fail check
+TEST_PROFILE=work blocked_evidence "$XDG_STATE_HOME" run check
+require grep -Eq 'unavailable|unreadable|invalid external metadata' "$CASE/output"
+blocked_evidence "$XDG_STATE_HOME" run_evidence _external_deploy_read_state "$INSTALLED"
+require test "$BLOCKED_STATUS" -eq 1
+: > "$CASE/empty-plan"
+blocked_evidence "$XDG_STATE_HOME" run_evidence external_deploy_all "$BOOK" "$CASE/empty-plan"
+require test "$BLOCKED_STATUS" -eq 2
+: > "$INSTALLED"
+printf 'claude\tstale\t%s\t%s\n' "$HOME/.claude/skills/stale" "$CASE/former-source" > "$LOST"
+TEST_PROFILE=work blocked_evidence "$XDG_STATE_HOME" run check
+: > "$LOST"
+mkdir "$XDG_STATE_HOME/agent-rules/.external-deploy.retained"
+TEST_PROFILE=work blocked_evidence "$XDG_STATE_HOME" run check
+TEST_PROFILE=work blocked_evidence "$XDG_STATE_HOME" run --dry-run
+require test "$BLOCKED_STATUS" -eq 2
+rmdir "$XDG_STATE_HOME/agent-rules/.external-deploy.retained"
+TEST_PROFILE=work readonly_run pass check
+ok 'inaccessible state cannot hide installed rows, relinquished rows or retained recovery evidence'
+blocked_evidence "${MANIFEST%/*}" run_evidence check_external_skills_all "$BOOK" ''
+blocked_evidence "${MANIFEST%/*}" run_evidence external_deploy_all "$BOOK" "$CASE/empty-plan"
+require test "$BLOCKED_STATUS" -eq 1
+chmod 600 "$MANIFEST"
+cp -p "$MANIFEST" "$ROOT/manifest-evidence-before"
+chmod 000 "$MANIFEST"
+status=0
+run_evidence check_external_skills_all "$BOOK" '' || status=$?
+chmod 600 "$MANIFEST"
+require cmp -s "$ROOT/manifest-evidence-before" "$MANIFEST"
+require test "$status" -ne 0
+ok 'unavailable manifest evidence fails the external checker independently of the CLI manifest check'
+fresh absent-evidence
+run_evidence _external_deploy_absent "$CASE/not-created/metadata"
+require absent "$CASE/not-created"
+run_evidence _external_deploy_read_state "$INSTALLED"
+PROFILE=work bash -c '. "$1/install.sh"; _ed_agents=(stale); _ed_names=(stale); _ed_paths=(stale); _ed_targets=(stale); _external_deploy_read_state "$2" || exit; [ "${#_ed_agents[@]}${#_ed_names[@]}${#_ed_paths[@]}${#_ed_targets[@]}" = 0000 ]' _ "$BOOK" "$INSTALLED"
+if run_evidence _external_deploy_read "$CASE/missing-plan"; then
+  echo 'FAIL: mandatory deployment plan was treated as optional'; exit 1
+fi
+run_evidence check_external_skills_all "$BOOK" ''
+TEST_PROFILE=work readonly_run pass --dry-run
+require absent "$XDG_STATE_HOME"
+for invalid in file broken; do
+  if [ "$invalid" = file ]; then printf 'not a directory\n' > "$CASE/invalid"
+  else ln -s "$CASE/missing-parent" "$CASE/invalid"; fi
+  export XDG_STATE_HOME="$CASE/invalid"
+  TEST_PROFILE=work readonly_run fail check
+  TEST_PROFILE=work readonly_run fail --dry-run
+  if run_evidence _external_deploy_absent "$XDG_STATE_HOME/agent-rules/metadata"; then
+    echo 'FAIL: invalid parent was classified as confirmed absence'; exit 1
+  fi
+  rm "$CASE/invalid"
+done
+ok 'genuine absent evidence stays read-only while regular-file and broken-link ancestors are refused'
+fresh failed-evidence-listing
+export MANIFEST="$CASE/independent-manifest/links"
+TEST_PROFILE=work require run
+mkdir "$CASE/bin"
+printf '#!/usr/bin/env bash\nprintf "external-installed.tsv\\n"\nexit 23\n' > "$CASE/bin/ls"
+chmod +x "$CASE/bin/ls"
+PATH="$CASE/bin:$PATH" TEST_PROFILE=work readonly_run fail check
+PATH="$CASE/bin:$PATH" TEST_PROFILE=work readonly_run fail --dry-run
+if PATH="$CASE/bin:$PATH" run_evidence _external_deploy_absent "$CASE/absent"; then
+  echo 'FAIL: failed listing stdout was accepted as confirmed absence'; exit 1
+fi
+require absent "$CASE/absent"
+ok 'failed metadata enumeration with valid stdout cannot prove absence or a clean recovery directory'
+mkdir "$XDG_STATE_HOME/agent-rules/.external-deploy.real"
+printf '#!/usr/bin/env bash\nprintf "unrelated-entry\\n"\nexit 0\n' > "$CASE/bin/ls"
+PATH="$CASE/bin:$PATH" TEST_PROFILE=work readonly_run fail --dry-run
+require grep -Fq '.external-deploy.real' "$CASE/output"
+ok 'successful enumeration uses actual recovery paths even when listing output omits the marker'
+
 printf '%s integration assertions passed\n' "$PASS"

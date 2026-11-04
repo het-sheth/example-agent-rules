@@ -191,6 +191,14 @@ intended destinations plus selection reconciliation. It does not call preparatio
 create temporary files or inspect missing source contents. A successful dry-run therefore does
 not prove that unavailable sources can be fetched or that their selected paths exist. Both check
 and dry-run report retained `.external-deploy.*` recovery evidence and fail pending inspection.
+The checker skips missing optional state or manifest evidence only after confirming absence
+through readable, searchable ancestors and successful parent enumeration. Unavailable evidence
+fails inspection. Recovery discovery also requires successful directory enumeration before
+checking actual marker paths. Neither check nor dry-run creates evidence to replace what it
+cannot inspect. `_external_deploy_absent path` returns 0 only for confirmed absence, and 1 for
+present, invalid or unavailable paths. `_external_deploy_read_state file` clears its row arrays
+and returns empty success only for confirmed absence; existing state must be readable and valid.
+The mandatory `_external_deploy_read file` plan-reader contract is unchanged.
 
 ## Source updates and rollback
 

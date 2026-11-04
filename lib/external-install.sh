@@ -49,14 +49,7 @@ external_skills_plan() {
 }
 
 _external_skills_recovery() {
-  local path bad=0
-  for path in "$1"/.external-deploy.*; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
-      warn "external recovery evidence requires inspection: $path"
-      bad=2
-    fi
-  done
-  return "$bad"
+  _external_deploy_recovery "$1"
 }
 
 install_external_skills_all() {
@@ -92,22 +85,23 @@ check_external_skills_all() {
     echo 'FAIL: external selection or required locked cache unavailable'; return 1;
   }
   for file in "$MANIFEST" "$state/external-installed.tsv" "$state/external-relinquished.tsv"; do
-    [ -e "$file" ] || [ -L "$file" ] || continue
-    if [ ! -f "$file" ] || [ -L "$file" ]; then
+    _external_deploy_absent "$file" && continue
+    if [ ! -f "$file" ] || [ ! -r "$file" ] || [ -L "$file" ]; then
       echo "FAIL: invalid external metadata: $file"; return 1
     fi
   done
-  file="$state/external-installed.tsv"
-  if [ -f "$file" ]; then
-    _external_deploy_read "$file" || { echo 'FAIL: invalid external installed state'; return 1; }
-    installed="$(cat "$file")" || return 1
-    for ((i=0; i<${#_ed_paths[@]}; i++)); do
-      if ! _external_deploy_owned "${_ed_paths[i]}" "${_ed_targets[i]}"; then
-        echo "FAIL: external link or manifest ownership mismatch: ${_ed_paths[i]}"
-        bad=1
-      fi
-    done
-  fi
+  _external_deploy_read_state "$state/external-installed.tsv" || {
+    echo 'FAIL: invalid external installed state'; return 1;
+  }
+  for ((i=0; i<${#_ed_paths[@]}; i++)); do
+    printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "${_ed_paths[i]}" "${_ed_targets[i]}"
+    installed+="$line"$'\n'
+    if ! _external_deploy_owned "${_ed_paths[i]}" "${_ed_targets[i]}"; then
+      echo "FAIL: external link or manifest ownership mismatch: ${_ed_paths[i]}"
+      bad=1
+    fi
+  done
+  installed="${installed%$'\n'}"
   sorted_desired="$(LC_ALL=C sort <<< "$desired")" || {
     echo 'FAIL: cannot sort desired external selection'; return 1;
   }
@@ -118,18 +112,17 @@ check_external_skills_all() {
     echo 'FAIL: external installed selection differs from current selection; run install.sh'
     bad=1
   fi
-  file="$state/external-relinquished.tsv"
-  if [ -f "$file" ]; then
-    _external_deploy_read "$file" || { echo 'FAIL: invalid external relinquished state'; return 1; }
-    for path in "${_ed_paths[@]}"; do
-      if [ -e "$path" ] || [ -L "$path" ]; then
-        echo "FAIL: external relinquished destination conflict: $path"
-      else
-        echo "FAIL: stale external relinquished evidence; run install.sh: $path"
-      fi
-      bad=1
-    done
-  fi
+  _external_deploy_read_state "$state/external-relinquished.tsv" || {
+    echo 'FAIL: invalid external relinquished state'; return 1;
+  }
+  for path in "${_ed_paths[@]}"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      echo "FAIL: external relinquished destination conflict: $path"
+    else
+      echo "FAIL: stale external relinquished evidence; run install.sh: $path"
+    fi
+    bad=1
+  done
   if [ -f "$MANIFEST" ]; then
     for agent in claude codex; do
       root="$(skills_dest_for "$agent")" || { echo 'FAIL: cannot resolve skill destinations'; return 1; }

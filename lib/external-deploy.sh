@@ -7,6 +7,44 @@ _external_deploy_absolute() {
   [[ "$1" != *[[:space:][:cntrl:]]* ]]
 }
 
+# Confirm a missing path through a readable, searchable parent without creating it.
+_external_deploy_absent() {
+  local path="$1" parent entries entry
+  _external_deploy_absolute "$path" || return 1
+  [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+  parent="${path%/*}"; parent="${parent:-/}"
+  if [ ! -d "$parent" ]; then
+    _external_deploy_absent "$parent"
+    return $?
+  fi
+  [ -r "$parent" ] && [ -x "$parent" ] || return 1
+  entries="$(LC_ALL=C command ls -1A "$parent")" || return 1
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    [ "$entry" != "${path##*/}" ] || return 1
+  done <<< "$entries"
+  return 0
+}
+
+
+# Inspect recovery paths only after directory enumeration succeeds.
+_external_deploy_recovery() {
+  local state="$1" path bad=0
+  _external_deploy_absent "$state" && return 0
+  if [ ! -d "$state" ] || [ ! -r "$state" ] || [ ! -x "$state" ]; then
+    warn "unavailable external recovery directory: $state"; return 2
+  fi
+  LC_ALL=C command ls -1A "$state" >/dev/null || {
+    warn "cannot inspect external recovery directory: $state"; return 2;
+  }
+  for path in "$state"/.external-deploy.*; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      warn "external recovery evidence requires inspection: $path"
+      bad=2
+    fi
+  done
+  return "$bad"
+}
+
 # Resolve the parent physically while retaining a possibly absent leaf.
 _external_deploy_location() {
   local path="$1" suffix="/${1##*/}" parent
@@ -43,6 +81,17 @@ _external_deploy_read() {
     seen+=("$key")
     _ed_agents+=("$agent") _ed_names+=("$name") _ed_paths+=("$path") _ed_targets+=("$target")
   done < "$file"
+}
+
+# Optional state is empty only when its absence is confirmed through accessible ancestors.
+_external_deploy_read_state() {
+  local file="$1"
+  _ed_agents=() _ed_names=() _ed_paths=() _ed_targets=()
+  _external_deploy_absent "$file" && return 0
+  [ -f "$file" ] && [ -r "$file" ] && [ ! -L "$file" ] || {
+    warn "unavailable or invalid external state: $file"; return 1;
+  }
+  _external_deploy_read "$file"
 }
 
 # Validate every desired row before deployment; an empty set can clean up a disabled profile.
@@ -177,31 +226,25 @@ external_deploy_all() {
   for path in "$state" "$MANIFEST" "$BACKUP"; do
     _external_deploy_absolute "$path" || { warn 'invalid external deployment state or backup path'; return 1; }
   done
-  for path in "$state"/.external-deploy.*; do
-    [ ! -e "$path" ] && [ ! -L "$path" ] || { warn "external recovery evidence requires inspection: $path"; return 2; }
-  done
+  _external_deploy_recovery "$state" || return 2
   for path in "${_ed_metadata[@]}"; do
-    [ ! -e "$path" ] && [ ! -L "$path" ] && continue
-    [ -f "$path" ] && [ ! -L "$path" ] || { warn "invalid external metadata: $path"; return 1; }
+    _external_deploy_absent "$path" && continue
+    [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || { warn "invalid external metadata: $path"; return 1; }
   done
-  if [ -f "${_ed_metadata[1]}" ]; then
-    _external_deploy_read "${_ed_metadata[1]}" || return 1
-    _ed_old_paths=("${_ed_paths[@]}") _ed_old_targets=("${_ed_targets[@]}")
-    for ((i=0; i<${#_ed_paths[@]}; i++)); do
-      printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "${_ed_paths[i]}" "${_ed_targets[i]}"
-      _ed_old_rows+=("$line")
-    done
-  fi
-  if [ -f "${_ed_metadata[2]}" ]; then
-    _external_deploy_read "${_ed_metadata[2]}" || return 1
-    for ((i=0; i<${#_ed_paths[@]}; i++)); do
-      path="${_ed_paths[i]}"
-      _ed_lost_targets+=("${_ed_targets[i]}")
-      [ -e "$path" ] || [ -L "$path" ] || continue
-      printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "$path" "${_ed_targets[i]}"
-      _ed_lost_paths+=("$path") _ed_lost_rows+=("$line")
-    done
-  fi
+  _external_deploy_read_state "${_ed_metadata[1]}" || return 1
+  _ed_old_paths=("${_ed_paths[@]}") _ed_old_targets=("${_ed_targets[@]}")
+  for ((i=0; i<${#_ed_paths[@]}; i++)); do
+    printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "${_ed_paths[i]}" "${_ed_targets[i]}"
+    _ed_old_rows+=("$line")
+  done
+  _external_deploy_read_state "${_ed_metadata[2]}" || return 1
+  for ((i=0; i<${#_ed_paths[@]}; i++)); do
+    path="${_ed_paths[i]}"
+    _ed_lost_targets+=("${_ed_targets[i]}")
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    printf -v line '%s\t%s\t%s\t%s' "${_ed_agents[i]}" "${_ed_names[i]}" "$path" "${_ed_targets[i]}"
+    _ed_lost_paths+=("$path") _ed_lost_rows+=("$line")
+  done
   for ((i=0; i<${#_ed_old_paths[@]}; i++)); do
     path="${_ed_old_paths[i]}"
     if { [ -e "$path" ] || [ -L "$path" ]; } && ! _external_deploy_owned "$path" "${_ed_old_targets[i]}"; then
